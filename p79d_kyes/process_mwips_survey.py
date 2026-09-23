@@ -484,10 +484,10 @@ def check_integrated_maps(integrated_dir):
 def main():
     """Main execution"""
     # Configuration
-    DATA_DIR = '../data/mwips/clouds_q2_CO/clouds_13co/clouds_13co_fits/'
-    OUTPUT_DIR = '../data/mwips/predictions/'
-    INTEGRATED_MAPS_DIR = '../data/mwips/CO_L105_150_B-5_5_V-95_25_integrated_maps/'
-    MODEL_PATH = './models/test9005.pth'
+    DATA_DIR = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/clouds_q2_CO/clouds_13co/clouds_13co_fits/'
+    OUTPUT_DIR = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/predictions/'
+    INTEGRATED_MAPS_DIR = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/CO_L105_150_B-5_5_V-95_25_integrated_maps/'
+    MODEL_PATH = '/home/x-nbisht1/projects/p79d_dataset/models/test9005.pth'
     
     # Optional: Check integrated maps first
     if os.path.exists(INTEGRATED_MAPS_DIR):

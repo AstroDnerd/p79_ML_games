@@ -12,7 +12,8 @@ from pathlib import Path
 #TAURUS DATA: https://lweb.cfa.harvard.edu/rtdc/CO/NumberedRegions/DHT21/index.html
 #PERSEUS DATA: https://dataverse.harvard.edu/dataset.xhtml?persistentId=hdl:10904/10075&studyListingIndex=9_146394a15e2efcc6f22d801ac7ff
 #SERPENS DATA: http://vizier.cds.unistra.fr/viz-bin/VizieR?-source=J/A%2BA/646/A170
-
+#ORION DATA: https://cdsarc.cds.unistra.fr/ftp/J/A+A/564/A68/fits/
+#Ophiocus: https://lweb.cfa.harvard.edu/COMPLETE/data/mol_lines/FCRAO/
 
 def load_ppv_cube(fits_path, data_format='auto'):
     """
@@ -329,7 +330,8 @@ def prepare_model_input(moment0, moment1, moment2, emission_mask, target_size=12
     # Crop or pad to square
     ny, nx = channel0.shape
     size = min(ny, nx)
-    
+    res_factor = min(1.0, size / target_size)
+
     # Center crop
     y_start = (ny - size) // 2
     x_start = (nx - size) // 2
@@ -360,10 +362,10 @@ def prepare_model_input(moment0, moment1, moment2, emission_mask, target_size=12
     print(f"Channel 1 (velocity-weighted) range: {model_input[1].min():.3f} to {model_input[1].max():.3f}")
     print(f"Channel 2 (dispersion) range: {model_input[2].min():.3f} to {model_input[2].max():.3f}")
     
-    return model_input
+    return model_input, res_factor
 
 def prepare_tiled_model_input(moment0, moment1, moment2, emission_mask, 
-                               n_tiles=10, min_coverage=0.10, max_overlap=0.1):
+                               n_tiles=10, min_coverage=0.10, max_overlap=0.1, was_upsampled=False, original_min_size=128):
     """
     Intelligently sample n_tiles from emission regions using density-based selection.
     
@@ -386,7 +388,8 @@ def prepare_tiled_model_input(moment0, moment1, moment2, emission_mask,
     
     ny, nx = moment0.shape
     tile_size = 128
-    
+    tile_res_factor = min(1.0, original_min_size / 128) if was_upsampled else 1.0
+
     # Step 1: Generate ALL possible tile positions and score them
     print("Scanning for emission-rich regions...")
     candidates = []
@@ -509,7 +512,8 @@ def prepare_tiled_model_input(moment0, moment1, moment2, emission_mask,
         'scores': scores,
         'original_shape': (ny, nx),
         'tile_size': tile_size,
-        'n_tiles': len(tiles)
+        'n_tiles': len(tiles),
+        'res_factors': np.array([tile_res_factor])
     }
 
 
@@ -664,7 +668,7 @@ def visualize_processing_pipeline(moment0, moment1, moment2, model_input,
     print(f"\nVisualization saved: {output_path}")
     plt.close()
 
-def process_ppvfits_to_model_input(fits_path, mc_name='perseus', output_dir='./perseus_output', 
+def process_ppvfits_to_model_input(fits_path, data_output_dir, mc_name='perseus', output_dir='./perseus_output', 
                                    data_format='auto', use_tiling=False, n_tiles=5, min_coverage=0.1, max_overlap=0.1):
     """
     Complete pipeline with optional tiling support.
@@ -681,6 +685,7 @@ def process_ppvfits_to_model_input(fits_path, mc_name='perseus', output_dir='./p
         model_input or tile_data depending on use_tiling
     """
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(data_output_dir, exist_ok=True)
     
     print("Load PPV Cube")
     data, header, wcs, velocity_axis = load_ppv_cube(fits_path, data_format=data_format)
@@ -689,6 +694,8 @@ def process_ppvfits_to_model_input(fits_path, mc_name='perseus', output_dir='./p
     moment0, moment1, moment2, emission_mask = compute_moment_maps(data, velocity_axis)
     
     ny, nx = moment0.shape
+    was_upsampled = min(ny, nx) < 128
+    original_min_size = min(ny, nx)
     if min(ny, nx) < 128:
         print("Small cloud detected - upsampling moment maps")
         moment0, moment1, moment2, emission_mask = upsample_moment_maps(
@@ -704,29 +711,26 @@ def process_ppvfits_to_model_input(fits_path, mc_name='perseus', output_dir='./p
             moment0, moment1, moment2, emission_mask, 
             n_tiles=n_tiles,  
             min_coverage=min_coverage,   
-            max_overlap=max_overlap      
+            max_overlap=max_overlap, was_upsampled = was_upsampled, original_min_size = original_min_size,
         )
         
         # Save tiles
-        output_file = f'{output_dir}/{mc_name}_tiles.npz'
+        output_file = f'{data_output_dir}/{mc_name}_tiles.npz'
         np.savez(output_file, **tile_data)
         print(f"\nTiles saved: {output_file}")
         
         # Still save moment maps for reference
-        np.savez(f'{output_dir}/{mc_name}_moments.npz',
+        np.savez(f'{data_output_dir}/{mc_name}_moments.npz',
                 moment0=moment0, moment1=moment1, moment2=moment2,
                 emission_mask=emission_mask, column_density=column_density,
                 velocity_axis=velocity_axis)
-        print(f"Moment maps saved: {output_dir}/{mc_name}_moments.npz")
+        print(f"Moment maps saved: {data_output_dir}/{mc_name}_moments.npz")
         
         print("PROCESSING COMPLETE")
         return tile_data
     else:
         print("Prepare Model Input")
-        model_input = prepare_model_input(moment0, moment1, moment2, emission_mask, target_size=128)
-        
-        print("Prepare Model Input")
-        model_input = prepare_model_input(moment0, moment1, moment2, emission_mask, target_size=128)
+        model_input, res_factor = prepare_model_input(moment0, moment1, moment2, emission_mask, target_size=128)
         
         print("Visualization")
         visualize_processing_pipeline(moment0, moment1, moment2, model_input, 
@@ -734,16 +738,17 @@ def process_ppvfits_to_model_input(fits_path, mc_name='perseus', output_dir='./p
                                     output_path=f'{output_dir}/{mc_name}_processing.png')
         
         #Save outputs
-        output_file = f'{output_dir}/{mc_name}_model_input.npy'
+        output_file = f'{data_output_dir}/{mc_name}_model_input.npy'
         np.save(output_file, model_input)
+        np.save(output_file.replace('.npy', '_resfactor.npy'), np.array([res_factor]))
         print(f"\nModel input saved: {output_file}")
         
         # Save moment maps for reference
-        np.savez(f'{output_dir}/{mc_name}_moments.npz',
+        np.savez(f'{data_output_dir}/{mc_name}_moments.npz',
                 moment0=moment0, moment1=moment1, moment2=moment2,
                 emission_mask=emission_mask, column_density=column_density,
                 velocity_axis=velocity_axis)
-        print(f"Moment maps saved: {output_dir}/{mc_name}_moments.npz")
+        print(f"Moment maps saved: {data_output_dir}/{mc_name}_moments.npz")
         
         print("PROCESSING COMPLETE")
         print(f"\nReady for model inference:")
@@ -756,33 +761,38 @@ def process_ppvfits_to_model_input(fits_path, mc_name='perseus', output_dir='./p
 
 if __name__ == "__main__":
     #Configuration
-    PERSEUS_13CO_PATH = '../data/perseus_mc/'
+    PERSEUS_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/perseus/'
     PERSEUS_13CO_MOMENT_PATH = PERSEUS_13CO_PATH + 'PerA_13coFCRAO_F_map.fits.gz'
     PERSEUS_13CO_PPV_PATH = PERSEUS_13CO_PATH + 'PerA_13coFCRAO_F_xyv.fits.gz'
+    PERSEUS_OUTPUT = '/home/x-nbisht1/plots/perseus/'
 
     PERSEUS_CENTER = SkyCoord('03h37m00s', '+31d49m00s', frame='icrs')
     PERSEUS_SIZE = 6.0 * u.degree
     OUTPUT_SIZE = 128
 
-    TAURUS_13CO_PATH = '../data/taurus_mc/'
+    TAURUS_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/taurus/'
     TAURUS_13CO_MOMENT_PATH = TAURUS_13CO_PATH + 'DHT21_Taurus_mom.fits'
     TAURUS_13CO_PPV_PATH = TAURUS_13CO_PATH + 'DHT21_Taurus_interp.fits'
+    TAURUS_OUTPUT = '/home/x-nbisht1/plots/taurus/'
 
-    SERPENS_13CO_PATH = '../data/serpens_mc/'
+    SERPENS_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/serpens/'
     SERPENS_13CO_PPV_PATH = SERPENS_13CO_PATH + 'serpens_13co_xyv.fit.gz'#'13co10.fits'
+    SERPENS_OUTPUT = '/home/x-nbisht1/plots/serpens/'
 
-    ORION_13CO_PATH = '../data/orion_mc/'
-    ORION_13CO_PPV_PATH = ORION_13CO_PATH + 'Fig3a.fits.gz'
+    ORION_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/orion/'
+    ORION_13CO_PPV_PATH = ORION_13CO_PATH + 'Fig1.fits.gz' #Fig3a
+    ORION_OUTPUT = '/home/x-nbisht1/plots/orion/'
 
-    OPH_13CO_PATH = '../data/ophiucus_mc/'
+    OPH_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/ophiucus/'
     OPH_13CO_PPV_PATH = OPH_13CO_PATH + 'OphA_13coFCRAO_F_xyv.fits.gz'
+    OPH_OUTPUT = '/home/x-nbisht1/plots/ophiucus/'
     # Physical constants
     M_H2 = 2.8 * u.Da  # Mean molecular weight including He
     K_B = 1.380649e-23 * u.J / u.K
     # Process with tiling
-    #tile_data = process_ppvfits_to_model_input(fits_path=PERSEUS_13CO_PATH, mc_name='perseus',output_dir=PERSEUS_13CO_PATH,data_format='auto',use_tiling=True,n_tiles=6,min_coverage=0.1, max_overlap=0.1)
-    #tile_data = process_ppvfits_to_model_input(fits_path=TAURUS_13CO_PPV_PATH, mc_name='taurus',output_dir=TAURUS_13CO_PATH,data_format='auto',use_tiling=True,n_tiles=2,min_coverage=0, max_overlap=0)
-    #tile_data = process_ppvfits_to_model_input(fits_path=SERPENS_13CO_PPV_PATH, mc_name='serpens',output_dir=SERPENS_13CO_PATH,data_format='auto',use_tiling=False,n_tiles=4,min_coverage=0, max_overlap=0)
-    #tile_data = process_ppvfits_to_model_input(fits_path=ORION_13CO_PPV_PATH, mc_name='orion',output_dir=ORION_13CO_PATH,data_format='auto',use_tiling=True,n_tiles=4,min_coverage=0, max_overlap=0)
-    tile_data = process_ppvfits_to_model_input(fits_path=OPH_13CO_PPV_PATH, mc_name='ophiucus',output_dir=OPH_13CO_PATH,data_format='auto',use_tiling=True,n_tiles=4,min_coverage=0, max_overlap=0)
+    tile_data = process_ppvfits_to_model_input(fits_path=PERSEUS_13CO_PPV_PATH, data_output_dir = PERSEUS_13CO_PATH, mc_name='perseus',output_dir=PERSEUS_OUTPUT,data_format='auto',use_tiling=True,n_tiles=6,min_coverage=0.1, max_overlap=0.1)
+    tile_data = process_ppvfits_to_model_input(fits_path=TAURUS_13CO_PPV_PATH, data_output_dir = TAURUS_13CO_PATH, mc_name='taurus',output_dir=TAURUS_OUTPUT,data_format='auto',use_tiling=True,n_tiles=2,min_coverage=0, max_overlap=0)
+    tile_data = process_ppvfits_to_model_input(fits_path=SERPENS_13CO_PPV_PATH, data_output_dir = SERPENS_13CO_PATH, mc_name='serpens',output_dir=SERPENS_OUTPUT,data_format='auto',use_tiling=False,n_tiles=4,min_coverage=0, max_overlap=0)
+    tile_data = process_ppvfits_to_model_input(fits_path=ORION_13CO_PPV_PATH, data_output_dir = ORION_13CO_PATH, mc_name='orion',output_dir=ORION_OUTPUT,data_format='auto',use_tiling=True,n_tiles=4,min_coverage=0, max_overlap=0)
+    tile_data = process_ppvfits_to_model_input(fits_path=OPH_13CO_PPV_PATH, data_output_dir = OPH_13CO_PATH, mc_name='ophiucus',output_dir=OPH_OUTPUT,data_format='auto',use_tiling=True,n_tiles=4,min_coverage=0, max_overlap=0)
     

@@ -245,10 +245,10 @@ def create_comparison_report(predictions_json, output_dir):
 
 if __name__ == "__main__":
     # Configuration
-    INTEGRATED_MAPS_DIR = '../data/mwips/CO_L105_150_B-5_5_V-95_25_integrated_maps/'
-    PREDICTIONS_JSON = '../data/mwips/predictions/mwips_predictions.json'
-    CLOUDS_DIR = '../data/mwips/clouds_q2_CO/clouds_13co/clouds_13co_fits/'
-    OUTPUT_DIR = '../data/mwips/predictions/'
+    INTEGRATED_MAPS_DIR = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/CO_L105_150_B-5_5_V-95_25_integrated_maps/'
+    PREDICTIONS_JSON = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/predictions/mwips_predictions.json'
+    CLOUDS_DIR = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/clouds_q2_CO/clouds_13co/clouds_13co_fits/'
+    OUTPUT_DIR = '/home/x-nbisht1/projects/p79d_dataset/observations/mwips/predictions/'
     
     print("MWIPS INTEGRATED MAPS INSPECTOR")
     

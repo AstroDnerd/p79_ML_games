@@ -8,7 +8,6 @@ from importlib import reload
 import sys
 import os
 sys.path.append('/home/dcollins/repos/')
-import dtools_global.vis.pcolormesh_helper as pch
 import torch
 import pdb
 import numpy as np
@@ -64,7 +63,7 @@ def load_trained_model(model_path, model_type='net9005'):
     
     Args:
         model_path: Path to .pth model file
-        model_type: 'net9004' (deterministic) or 'net9005' (with uncertainty)
+        model_type: 'net9004' (deterministic) or 'net9009' (with uncertainty)
     
     Returns:
         model: Loaded model in eval mode
@@ -77,6 +76,12 @@ def load_trained_model(model_path, model_type='net9005'):
         has_uncertainty = False
     elif model_type == 'net9005':
         import networks_nbisht.net9005 as net
+        has_uncertainty = True
+    elif model_type == 'net9009':
+        import networks_nbisht.net9009 as net
+        has_uncertainty = True
+    elif model_type == 'net9010':
+        import networks_nbisht.net9010 as net
         has_uncertainty = True
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -120,8 +125,9 @@ def predict_MC_mach_number(data_tensor, model, has_uncertainty=True):
     if has_uncertainty:
         # Model outputs (mean, logvar)
         mean, logvar = output
-        mean = mean[0][0].cpu().item()
-        std = torch.exp(0.5 * logvar[0][0]).cpu().item()
+        #convert from log units
+        mean = np.exp(mean[0][0].cpu().item())
+        std  = np.exp(0.5 * logvar[0][0]).cpu().item() * mean   # σ in Ms units
         
         print(f"Prediction: Ms = {mean:.2f} ± {std:.2f}")
         print(f"68% confidence interval: [{mean - std:.2f}, {mean + std:.2f}]")
@@ -390,8 +396,8 @@ def visualize_tiled_predictions(tiles, predictions, uncertainties, positions,
     print(f"\nVisualization saved: {output_path}")
     plt.close()
 
-def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
-    
+def main(MC_PATH, MC_MODEL_INPUT, OUTPUT_PATH, obs_name='Perseus', is_tiled=False):
+    model_dir = "/home/x-nbisht1/scratch/projects/radmc3d/p79d_dataset/models"
     if is_tiled:
         # Load tiled data
         print("Loading tiled data...")
@@ -407,14 +413,24 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
         
         # Load model
         print("Load Model")
-        model, has_uncertainty = load_trained_model(model_path='./models/test9005.pth', 
-                                                     model_type='net9005')
+        model, has_uncertainty = load_trained_model(model_path=model_dir+'/test9009.pth', 
+                                                     model_type='net9009')
         
         # Batch inference
         print("Running batch inference...")
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         tiles_tensor = torch.from_numpy(tiles).float().to(device)
-        
+
+        # tiles_tensor is [N, 3, 128, 128]
+        res_factors = np.array(tile_data['res_factors']).flatten()
+        # If scalar, broadcast to all tiles
+        if len(res_factors) == 1:
+            res_factors = np.full(len(tiles), res_factors[0])
+
+        res_ch = torch.tensor(res_factors, dtype=tiles_tensor.dtype,
+                            device=device).view(-1, 1, 1, 1).expand(-1, 1, 128, 128).contiguous()
+        tiles_tensor = torch.cat([tiles_tensor, res_ch], dim=1)  # [N, 4, 128, 128]
+                
         predictions = []
         uncertainties = []
         
@@ -427,8 +443,8 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
                 
                 if has_uncertainty:
                     mean, logvar = output
-                    mean = mean.cpu().numpy().flatten()
-                    std = torch.exp(0.5 * logvar).cpu().numpy().flatten()
+                    mean = np.exp(mean.cpu().numpy().flatten())
+                    std  = torch.exp(0.5 * logvar).cpu().numpy().flatten() * mean
                     predictions.extend(mean)
                     uncertainties.extend(std)
                 else:
@@ -452,10 +468,10 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
         moments_file = f'{MC_PATH}/{obs_name}_moments.npz'
         visualize_tiled_predictions(tiles, predictions, uncertainties, positions,
                                     original_shape, coverages, moments_file,
-                                    output_path=f'{MC_PATH}/{obs_name}_tiled_prediction.png')
+                                    output_path=f'{OUTPUT_PATH}/{obs_name}_tiled_prediction.png')
         
         # Save results
-        results_file = f'{MC_PATH}/{obs_name}_tiled_results.txt'
+        results_file = f'{OUTPUT_PATH}/{obs_name}_tiled_results.txt'
         with open(results_file, 'w') as f:
             f.write(f"{obs_name.upper()} - TILED MACH NUMBER PREDICTIONS\n")
             f.write("="*60 + "\n\n")
@@ -473,8 +489,14 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
     else:
         print("Load Processed MC Data")
         data_tensor = load_processed_MC_data(MC_MODEL_INPUT)
+        #data_tensor is [1, 3, 128, 128], adding res channel
+        res_factor = float(np.load(MC_MODEL_INPUT.replace('.npy', '_resfactor.npy')))
+        res_ch = torch.full((1, 1, 128, 128), res_factor, dtype=data_tensor.dtype,
+                            device=data_tensor.device)
+        data_tensor = torch.cat([data_tensor, res_ch], dim=1)  # now [1, 4, 128, 128]
+
         compare_models = 0
-        model_name = '9005'
+        model_name = '9009'
         if compare_models:
             #Load multiple models for comparison
             print("Load Multiple Models")
@@ -508,7 +530,7 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
         else:
             #Load single model
             print("Load Model")
-            model, has_uncertainty = load_trained_model(model_path = f'./models/test{model_name}.pth', model_type=f'net{model_name}')
+            model, has_uncertainty = load_trained_model(model_path = f'{model_dir}/test{model_name}.pth', model_type=f'net{model_name}')
             
             print("Predict Mach Number")
             mean_ms, std_ms = predict_MC_mach_number(data_tensor, model, has_uncertainty)
@@ -517,9 +539,9 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
         print("Visualize Results")
         data_np = np.load(MC_MODEL_INPUT)
         visualize_MC_with_prediction(data_np, mean_ms, std_ms,
-                                        output_path=f'{MC_PATH}/{obs_name}_prediction.png')
+                                        output_path=f'{OUTPUT_PATH}/{obs_name}_prediction.png')
         
-        results_file = f'{MC_PATH}/{obs_name}_results.txt'
+        results_file = f'{OUTPUT_PATH}/{obs_name}_results.txt'
         with open(results_file, 'w') as f:
             f.write("MOLECULAR CLOUD - MACH NUMBER PREDICTION\n")
             
@@ -542,26 +564,32 @@ def main(MC_PATH, MC_MODEL_INPUT, obs_name='Perseus', is_tiled=False):
 
 
 if __name__ == "__main__":
-    PERSEUS_13CO_PATH = '../data/perseus_mc/'
+    PERSEUS_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/perseus/'
     PERSEUS_13CO_MOMENT_PATH = PERSEUS_13CO_PATH + 'PerA_13coFCRAO_F_map.fits.gz'
     PERSEUS_13CO_PPV_PATH = PERSEUS_13CO_PATH + 'PerA_13coFCRAO_F_xyv.fits.gz'
     PERSEUS_13CO_MODEL_INPUT = PERSEUS_13CO_PATH + 'perseus_model_input.npy'
+    PERSEUS_OUTPUT = '/home/x-nbisht1/plots/perseus/'
 
-    TAURUS_13CO_PATH = '../data/taurus_mc/'
+    TAURUS_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/taurus/'
     TAURUS_13CO_MOMENT_PATH = TAURUS_13CO_PATH + 'DHT21_Taurus_mom.fits'
     TAURUS_13CO_PPV_PATH = TAURUS_13CO_PATH + 'DHT21_Taurus_interp.fits'
     TAURUS_13CO_MODEL_INPUT = TAURUS_13CO_PATH + 'taurus_model_input.npy'
+    TAURUS_OUTPUT = '/home/x-nbisht1/plots/taurus/'
 
-    SERPENS_13CO_PATH = '../data/serpens_mc/'
+    SERPENS_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/serpens/'
     SERPENS_13CO_MODEL_INPUT = SERPENS_13CO_PATH + 'serpens_model_input.npy'
+    SERPENS_OUTPUT = '/home/x-nbisht1/plots/serpens/'
 
-    ORION_13CO_PATH = '../data/orion_mc/'
+    ORION_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/orion/'
     ORION_13CO_MODEL_INPUT = ORION_13CO_PATH + 'orion_model_input.npy'
+    ORION_OUTPUT = '/home/x-nbisht1/plots/orion/'
 
-    OPH_13CO_PATH = '../data/ophiucus_mc/'
+    OPH_13CO_PATH = '/home/x-nbisht1/projects/p79d_dataset/observations/ophiucus/'
     OPH_13CO_MODEL_INPUT = OPH_13CO_PATH + 'ophiucus_model_input.npy'
+    OPH_OUTPUT = '/home/x-nbisht1/plots/ophiucus/'
 
-    #main(PERSEUS_13CO_PATH, PERSEUS_13CO_MODEL_INPUT, obs_name='perseus', is_tiled=True)
-    #main(TAURUS_13CO_PATH, TAURUS_13CO_MODEL_INPUT, obs_name='taurus', is_tiled=True)
-    #main(SERPENS_13CO_PATH, SERPENS_13CO_MODEL_INPUT, obs_name='serpens', is_tiled=False)
-    main(OPH_13CO_PATH, OPH_13CO_MODEL_INPUT, obs_name='ophiucus', is_tiled=True)
+    main(PERSEUS_13CO_PATH, PERSEUS_13CO_MODEL_INPUT, PERSEUS_OUTPUT, obs_name='perseus', is_tiled=True)
+    main(TAURUS_13CO_PATH, TAURUS_13CO_MODEL_INPUT, TAURUS_OUTPUT, obs_name='taurus', is_tiled=True)
+    main(SERPENS_13CO_PATH, SERPENS_13CO_MODEL_INPUT, SERPENS_OUTPUT, obs_name='serpens', is_tiled=False)
+    main(ORION_13CO_PATH, ORION_13CO_MODEL_INPUT, ORION_OUTPUT, obs_name='orion', is_tiled=True)
+    main(OPH_13CO_PATH, OPH_13CO_MODEL_INPUT, OPH_OUTPUT, obs_name='ophiucus', is_tiled=True)

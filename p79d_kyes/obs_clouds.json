@@ -1,0 +1,32 @@
+{
+  "description": "Observed clouds for net9010. Temperatures, distances and beams are ASSUMPTIONS used to convert the maps to the training units (velocities / c_s) and to set the resolution channel; edit them here, nothing is hard-coded in predict_observations_net9010.py.",
+  "obs_dir": "/home/x-nbisht1/projects/p79d_dataset/observations",
+  "output_dir": "/home/x-nbisht1/plots/observations_net9010",
+  "mu_sound": 2.33,
+  "mask_sigma": 3.0,
+  "tile_size": 128,
+  "clouds": {
+    "perseus":   {"fits": "perseus/PerA_13coFCRAO_F_xyv.fits.gz",   "tracer": "13CO(1-0)", "telescope": "FCRAO 14m (COMPLETE)",
+                  "beam_arcsec": 46.0, "distance_pc": 300.0, "T_K": 10.0,
+                  "n_tiles": 6, "min_coverage": 0.10, "max_overlap": 0.10, "Ms_literature": null, "Ms_literature_ref": null},
+    "ophiuchus": {"fits": "ophiucus/OphA_13coFCRAO_F_xyv.fits.gz",  "tracer": "13CO(1-0)", "telescope": "FCRAO 14m (COMPLETE)",
+                  "beam_arcsec": 46.0, "distance_pc": 137.0, "T_K": 10.0,
+                  "n_tiles": 4, "min_coverage": 0.10, "max_overlap": 0.10, "Ms_literature": null, "Ms_literature_ref": null},
+    "serpens":   {"fits": "serpens/serpens_13co_xyv.fit.gz",        "tracer": "13CO(1-0)", "telescope": "FCRAO 14m (COMPLETE)",
+                  "beam_arcsec": 46.0, "distance_pc": 436.0, "T_K": 10.0,
+                  "n_tiles": 2, "min_coverage": 0.10, "max_overlap": 0.50, "Ms_literature": null, "Ms_literature_ref": null},
+    "orion":     {"fits": "orion/Fig1.fits.gz",                     "tracer": "13CO(1-0)?", "telescope": "NRO 45m",
+                  "beam_arcsec": 22.0, "distance_pc": 400.0, "T_K": 20.0,
+                  "n_tiles": 4, "min_coverage": 0.10, "max_overlap": 0.10, "Ms_literature": null, "Ms_literature_ref": null},
+    "taurus":    {"fits": "taurus/DHT21_Taurus_interp.fits",        "tracer": "12CO(1-0)", "telescope": "CfA 1.2m (Dame et al. 2001)",
+                  "beam_arcsec": 504.0, "distance_pc": 140.0, "T_K": 10.0,
+                  "n_tiles": 2, "min_coverage": 0.0, "max_overlap": 0.0, "Ms_literature": null, "Ms_literature_ref": null}
+  },
+  "notes": {
+    "T_K": "10 K for the dark clouds and 20 K for Orion are placeholders; c_s scales as sqrt(T), so the predicted Ms scales as 1/sqrt(T) through the velocity channels",
+    "beam_arcsec": "FCRAO 13CO beam ~46 arcsec on 23 arcsec pixels; NRO 45m 13CO ~22 arcsec (check); CfA 8.4 arcmin",
+    "taurus": "12CO, 0.65 km/s channels and a ~39 pc tile: far outside the training data, reported only as a sanity check",
+    "orion": "0.5 km/s channels: narrow lines are unresolved in velocity",
+    "Ms_literature": "fill from linewidth-based estimates (use observed linewidths, not derived dissipation times)"
+  }
+}

@@ -159,10 +159,15 @@ def clean_moments(T, v, cs_kms):
     return np.stack([m0 / m0.mean(), m1 / cs_kms, np.sqrt(np.maximum(var, 0)) / cs_kms]).astype(np.float32)
 
 
-def observed_moments(T, v, rc):
-    """The observation pipeline's moments on the noisy cube: [K km/s, km/s, km/s], NaN masked."""
+def observed_moments(T, v, rc, min_channels=1):
+    """
+    The observation pipeline's moments on the noisy cube: [K km/s, km/s, km/s],
+    NaN masked. min_channels=1 reproduces the original extraction; reobserve
+    uses the contiguous-channel mask (see get_Observation_Data).
+    """
     with contextlib.redirect_stdout(io.StringIO()):
-        m0, m1, m2, mask = G.compute_moment_maps(T.transpose(2, 1, 0), v, noise_threshold=rc["mask_sigma"])
+        m0, m1, m2, mask = G.compute_moment_maps(T.transpose(2, 1, 0), v, noise_threshold=rc["mask_sigma"],
+                                                 min_channels=min_channels)
     # compute_moment_maps works on [v, y, x] and returns [y, x]; transpose back to [i0, i1]
     return np.stack([m0.T, m1.T, m2.T]).astype(np.float32), mask.T
 
@@ -318,6 +323,60 @@ def cmd_extract(args):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# REOBSERVE (stored cubes -> a new observed version, no ray tracing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _reobserve_file(job):
+    """Worker: add images_obs_<name>, mask_obs_<name>, frac_detected_<name> to every frame of one part file."""
+    path, rc, ob, seed = job
+    pix_arcsec = (rc["box_length_pc"] / rc["target_res"]) / ob["distance_pc"] * 206265.0
+    beam_sigma = ob["beam_fwhm_arcsec"] / 2.3548 / pix_arcsec
+    name, tag, n_img = None, ob["name"], 0
+    with h5py.File(path, "r+") as h:
+        name = h.attrs["sim_name"]
+        for g in sorted(k for k in h if k.startswith("DD")):
+            G_, frame = h[g], int(g[2:])
+            obs, masks, fd = [], [], []
+            for j in range(G_["images"].shape[0]):
+                il, ia = int(G_["los"][j]), int(G_["aug_index"][j])
+                T = G_[f"cube_{il}_{ia}"][()].astype(np.float32)
+                v = G_[f"v_{il}"][()].astype(np.float64)
+                Tb = gaussian_filter(T, sigma=(beam_sigma, beam_sigma, 0), mode="wrap")
+                rng = np.random.default_rng([seed, zlib.crc32(name.encode()), frame, il, ia])
+                o, mk = observed_moments(Tb + rng.normal(0.0, ob["noise_rms_K"], Tb.shape), v, rc,
+                                         min_channels=ob["min_channels"])
+                obs.append(o); masks.append(mk); fd.append(float(mk.mean()))
+            for k, val in ((f"images_obs_{tag}", np.stack(obs)), (f"mask_obs_{tag}", np.stack(masks)),
+                           (f"frac_detected_{tag}", np.array(fd))):
+                if k in G_:
+                    del G_[k]
+                G_[k] = val
+            n_img += len(obs)
+        h.attrs[f"observe_{tag}"] = json.dumps(ob)
+    return os.path.basename(path), n_img
+
+
+def cmd_reobserve(args):
+    """
+    Re-observe every stored noise-free cube with the setup rc["observe"][args.obs]
+    (beam, distance, noise, masking) and store the result next to the original
+    images_obs. Parallel over part files with multiprocessing.
+    """
+    import multiprocessing as mp
+    cfg, rc = json.load(open(args.config)), json.load(open(args.rt))
+    ob = dict(rc["observe"][args.obs], name=args.obs)
+    rcfg = rt_cfg(cfg, rc)
+    files = [f for s in cfg["sims"] for f in part_files(rcfg, s["name"])]
+    workers = args.workers or int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
+    print(f"reobserve '{args.obs}': {ob} on {len(files)} part files with {workers} workers", flush=True)
+    t0 = time.time()
+    with mp.Pool(workers) as pool:
+        for i, (fn, n) in enumerate(pool.imap_unordered(_reobserve_file,
+                                                        [(f, rc, ob, ob["seed"]) for f in files]), 1):
+            print(f"  [{i:3d}/{len(files)}] {fn}: {n} images  ({(time.time() - t0) / 60:.1f} min)", flush=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MERGE
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -332,7 +391,10 @@ RT_SAMPLE_FIELDS = {
 def cmd_merge(args):
     cfg, rc = json.load(open(args.config)), json.load(open(args.rt))
     rcfg = rt_cfg(cfg, rc)
-    out = os.path.join(cfg["output_dir"], rc["output_name"])
+    sfx = f"_{args.obs}" if args.obs else ""          # which observed version to merge
+    out = os.path.join(cfg["output_dir"], rc["output_name"][:-3] + sfx + ".h5")
+    obs_key, mask_key = f"images_obs{sfx}", f"mask_obs{sfx}"
+    sample_keys = {k: (f"{k}{sfx}" if k == "frac_detected" else k) for k in RT_SAMPLE_FIELDS}
     frames_rows, samples, sources, sim_rows, shape, cube_refs = [], [], [], [], None, []
     for sid, sim in enumerate(cfg["sims"]):
         files = part_files(rcfg, sim["name"])
@@ -355,7 +417,8 @@ def cmd_merge(args):
                     cube_refs.append((os.path.basename(p), f"{g}/cube_{int(G_['los'][j])}_{int(G_['aug_index'][j])}"))
                     samples.append([sid, fid, int(g[2:])] +
                                    [int(G_[k][j]) for k in ("los", "aug_index", "shift_x", "shift_y", "rot90")] +
-                                   [float(G_[k][j]) for k in ("Ms_los_mw", "Ms_los_vw", *RT_SAMPLE_FIELDS)])
+                                   [float(G_[k][j]) for k in ("Ms_los_mw", "Ms_los_vw")] +
+                                   [float(G_[sample_keys[k]][j]) for k in RT_SAMPLE_FIELDS])
         ms = np.array([r["Ms"] for r in frames_rows if r["sim_id"] == sid])
         sim_rows.append((sid, sim, n_frames_sim, ms.mean() if len(ms) else np.nan))
         print(f"  {sim['name']:20s} frames={n_frames_sim:4d}  ({len(files)} part file(s))")
@@ -371,6 +434,8 @@ def cmd_merge(args):
         h.attrs["created"] = datetime.datetime.now().isoformat(timespec="seconds")
         h.attrs["generator"] = f"extract_sim_radmc.py (git {E.git_hash()})"
         h.attrs["config_json"], h.attrs["rt_json"] = json.dumps(cfg), json.dumps(rc)
+        h.attrs["observe_version"] = (json.dumps(dict(rc["observe"][args.obs], name=args.obs)) if args.obs
+                                      else "original extraction (beam/noise from rt_json, min_channels=1)")
         h.attrs["layout"] = ("Same layout and sample order conventions as the projected dataset "
                              "(extract_sim_data.py): images / samples / labels / frames / sims. "
                              "images are noise-free 13CO moments in training units; images_obs "
@@ -391,8 +456,8 @@ def cmd_merge(args):
         for p, g, k in sources:
             with h5py.File(p, "r") as hp:
                 d[i0:i0 + k] = hp[g]["images"][()]
-                do[i0:i0 + k] = hp[g]["images_obs"][()]
-                dm[i0:i0 + k] = hp[g]["mask_obs"][()]
+                do[i0:i0 + k] = hp[g][obs_key][()]
+                dm[i0:i0 + k] = hp[g][mask_key][()]
             i0 += k
 
         E.put(h, "samples/sim_id", sid_s, "index into sims/*")
@@ -441,10 +506,15 @@ def main():
     e.add_argument("--n_chunks", type=int, default=1, help="split the frames of a sim over n jobs")
     m = sp.add_parser("merge")
     m.add_argument("--config", required=True); m.add_argument("--rt", required=True)
+    m.add_argument("--obs", default=None, help="merge this re-observed version (from reobserve)")
+    r = sp.add_parser("reobserve", help="new observed version from the stored cubes")
+    r.add_argument("--config", required=True); r.add_argument("--rt", required=True)
+    r.add_argument("--obs", required=True, help="name of a setup in rt['observe']")
+    r.add_argument("--workers", type=int, default=None)
     args = p.parse_args()
     if args.cmd == "extract" and args.index is None and args.sim is None:
         p.error("extract needs --index or --sim")
-    {"extract": cmd_extract, "merge": cmd_merge}[args.cmd](args)
+    {"extract": cmd_extract, "merge": cmd_merge, "reobserve": cmd_reobserve}[args.cmd](args)
 
 
 if __name__ == "__main__":

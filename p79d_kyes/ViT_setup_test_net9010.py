@@ -20,6 +20,8 @@ Outputs
   ~/plots/<kind>_net9010_<mode>[_<tag>].png
   <model_dir>/test9010_<mode>_fold<k>.pth                   weights
   <model_dir>/conformal_quantiles_9010_<mode>_fold<k>.json  q80/q90/q95 for Ms and chi
+With --tag T every name becomes ..._9010_T_<mode>_... (e.g. --tag 13co for the
+RADMC dataset: --data_file .../p79d_mach_grid_256_13co_v1.h5 --image_key images_obs).
   <model_dir>/net9010_<mode>_fold<k>_test.npz / .json       test predictions + metrics
 Plots are not versioned: each run overwrites the previous one for that mode.
 Pool the folds with analyze_kfold_net9010.py.
@@ -48,6 +50,10 @@ p.add_argument("--eval_only", action="store_true", help="load weights instead of
 p.add_argument("--no_plots", action="store_true", help="skip the diagnostic plots on calib")
 p.add_argument("--workers", type=int, default=8, help="DataLoader workers for training")
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
+p.add_argument("--data_file", default=net.data_file, help="dataset HDF5 (projected or 13CO)")
+p.add_argument("--image_key", default="images", choices=["images", "images_obs"],
+               help="images_obs: the 13CO dataset's noisy, masked observation-pipeline maps")
+p.add_argument("--tag", default="", help="label added to every output name, e.g. 13co")
 args = p.parse_args()
 
 # Module-level switches are read at call time: set them before building anything.
@@ -57,13 +63,23 @@ net.n_model_channels = net.n_input_channels + 1
 net.chi_field, net.chi_space = args.chi_field, args.chi_space
 net.CHI_LABEL = r"$\chi_v$" if args.chi_field == "chi_v" else r"$\chi_w$"
 net.epochs = args.epochs
+net.data_file, net.image_key, net.run_tag = args.data_file, args.image_key, args.tag
 fold = None if args.fold == "all" else int(args.fold)
 
-net_name  = f"net{net.idd}_{net.input_mode}"
+tag_      = f"_{args.tag}" if args.tag else ""
+net_name  = f"net{net.idd}{tag_}_{net.input_mode}"
 plot_dir  = os.path.join(os.environ["HOME"], "plots")
 os.makedirs(args.model_dir, exist_ok=True); os.makedirs(plot_dir, exist_ok=True)
 run_name  = f"{net_name}_fold{args.fold}"
-ckpt_path = os.path.join(args.model_dir, f"test{net.idd}_{net.input_mode}_fold{args.fold}.pth")
+ckpt_path = os.path.join(args.model_dir, f"test{net.idd}{tag_}_{net.input_mode}_fold{args.fold}.pth")
+
+# native resolution of the training maps, in pixels: 1 for projected maps, the
+# beam FWHM for the 13CO mocks (used to set the resolution channel on real data)
+import h5py
+with h5py.File(net.data_file, "r") as _f:
+    _rt = json.loads(_f.attrs["rt_json"]) if "rt_json" in _f.attrs else None
+native_beam_pix = 1.0 if _rt is None else _rt["beam_fwhm_arcsec"] / (
+    _rt["box_length_pc"] / _rt["target_res"] / _rt["distance_pc"] * 206265.0)
 print(f"{net_name} | fold {args.fold}/{args.n_folds} | target {net.chi_field} ({net.chi_space}) | "
       f"device {net.device} | threads {torch.get_num_threads()}", flush=True)
 
@@ -117,8 +133,9 @@ print("\nConformal quantiles (calib fold):")
 print("  Ms : " + "  ".join(f"q{int(a*100)}={q:.3f}" for a, q in q_ms.items()))
 print("  chi: " + "  ".join(f"q{int(a*100)}={q:.3f}" for a, q in q_chi.items()))
 print(f"  temperatures: T_ms={model.log_temp_ms.exp().item():.3f}  T_chi={model.log_temp_chi.exp().item():.3f}")
-with open(os.path.join(args.model_dir, f"conformal_quantiles_{net.idd}_{net.input_mode}_fold{args.fold}.json"), "w") as f:
+with open(os.path.join(args.model_dir, f"conformal_quantiles_{net.idd}{tag_}_{net.input_mode}_fold{args.fold}.json"), "w") as f:
     json.dump({"fold": args.fold, "chi_field": net.chi_field, "chi_space": net.chi_space,
+               "data_file": net.data_file, "image_key": net.image_key, "native_beam_pix": native_beam_pix,
                "ms_ln": {str(a): q for a, q in q_ms.items()},
                "chi_target": {str(a): q for a, q in q_chi.items()}}, f, indent=2)
 

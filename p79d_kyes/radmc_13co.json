@@ -1,0 +1,46 @@
+{
+  "description": "Synthetic 13CO J=1-0 observations of the mach_grid suite with RADMC-3D (LTE). Physical scaling of the dimensionless isothermal runs: code length = box_length_pc, code density 1 = n_H2_mean, code velocity 1 = isothermal sound speed at T_K.",
+  "radmc3d_binary": "/home/x-nbisht1/scripts/radmc3d/p79d_observations/radmc3d",
+  "molecule_file": "/home/x-nbisht1/scripts/radmc3d/p79d_observations/13co_lamda.dat",
+  "molecule": "13_co",
+  "rest_frequency_hz": 110201354100.0,
+  "box_length_pc": 4.6,
+  "n_H2_mean_cm3": 1000.0,
+  "T_K": 10.0,
+  "mu_sound": 2.33,
+  "X_13CO": 1e-06,
+  "npix_rt": 256,
+  "target_res": 128,
+  "channel_width_kms": 0.066,
+  "velocity_quantile": 0.999,
+  "velocity_margin_thermal_sigmas": 4.0,
+  "edge_channels": 6,
+  "distance_pc": 500.0,
+  "beam_fwhm_arcsec": 45.0,
+  "noise_rms_K": 0.1,
+  "mask_sigma": 3.0,
+  "frame_stride": 1,
+  "output_name": "p79d_mach_grid_256_13co_v1.h5",
+  "notes": {
+    "box_length_pc, n_H2_mean_cm3": "Paper I scaling (4.6 pc, 1000 cm^-3); N(H2) = 1.4e22 cm^-2 on average, so 13CO is moderately optically thick in dense regions",
+    "mu_sound": "mean particle mass for the sound speed (H2 + He); c_s = 0.188 km/s at 10 K",
+    "X_13CO": "13CO / H2 abundance; same value as radmc3d_utils.py",
+    "channel_width_kms": "FCRAO COMPLETE channel width (the Perseus/Ophiuchus cubes have 66.4 m/s)",
+    "velocity window": "per line of sight: +-(quantile of |v_los| + margin * thermal sigma of 13CO) plus edge_channels emission-free channels on each side, so the observation pipeline's edge-channel noise estimate works",
+    "npix_rt": "one ray per native cell column; PPV cubes are block-averaged to target_res before beam convolution",
+    "beam / noise": "applied after RT; distance only enters through the beam size in pixels",
+    "frame_stride": "process every n-th frame (1 = all)",
+    "molecule_file": "LAMDA 13C16O file (downloaded 2026-10-02 from home.strw.leidenuniv.nl/~moldata/datafiles/13co.dat). The older molecule_13_co.inp in p79d_observations is a copy of co.dat, i.e. 12CO, and must not be used.",
+    "observe": "Named re-observations of the stored noise-free cubes (extract_sim_radmc.py reobserve --obs NAME). fcrao500_v2: contiguous-channel (>=3) masking and 0.2 K noise, matching the measured COMPLETE Perseus noise (0.19 K per 0.066 km/s channel; Ophiuchus 0.37 K)."
+  },
+  "observe": {
+    "fcrao500_v2": {
+      "beam_fwhm_arcsec": 45.0,
+      "distance_pc": 500.0,
+      "noise_rms_K": 0.2,
+      "mask_sigma": 3.0,
+      "min_channels": 3,
+      "seed": 20261005
+    }
+  }
+}

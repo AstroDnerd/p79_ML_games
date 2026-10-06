@@ -13,7 +13,8 @@ For each cloud in obs_clouds.json:
      c_s = sqrt(k T / mu m_H) at the cloud's assumed T, masked pixels filled
      (W with the detection floor, velocities with the nearest detected pixel),
      then net9010.preprocess_maps, plus the resolution channel
-     r = clip(1 / beam_FWHM_in_pixels, 0.4, 1);
+     r = clip(native beam of the model's training maps / beam_FWHM_in_pixels, 0.4, 1)
+     (native beam = 1 px for the projected dataset, ~3.1 px for the 13CO mocks);
   4. predictions from every net9010 checkpoint found (k-fold models and the
      --fold all model), with 90% conformal intervals from each model's
      calibration quantiles.
@@ -46,8 +47,11 @@ p.add_argument("--models", nargs="*", default=None,
                help="model tags to use, e.g. fold0 foldall (default: every test9010_allmom_fold*.pth)")
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
 p.add_argument("--mode", default="allmom", choices=["allmom", "mom0"])
+p.add_argument("--tag", default="", help="run tag of the models, e.g. 13co")
 args = p.parse_args()
 cfg = json.load(open(args.config))
+if args.tag:
+    cfg["output_dir"] = cfg["output_dir"].rstrip("/") + f"_{args.tag}"
 os.makedirs(cfg["output_dir"], exist_ok=True)
 T_SIZE = cfg["tile_size"]
 
@@ -58,11 +62,12 @@ net.input_mode, net.n_model_channels = args.mode, net.n_input_channels + 1
 # ─── models ──────────────────────────────────────────────────────────────────
 def load_models():
     out = {}
-    for ck in sorted(glob.glob(os.path.join(args.model_dir, f"test9010_{args.mode}_fold*.pth"))):
+    tg = f"_{args.tag}" if args.tag else ""
+    for ck in sorted(glob.glob(os.path.join(args.model_dir, f"test9010{tg}_{args.mode}_fold*.pth"))):
         tag = re.search(r"_(fold\w+)\.pth$", ck).group(1)
         if args.models and tag not in args.models:
             continue
-        qf = os.path.join(args.model_dir, f"conformal_quantiles_9010_{args.mode}_{tag}.json")
+        qf = os.path.join(args.model_dir, f"conformal_quantiles_9010{tg}_{args.mode}_{tag}.json")
         if not os.path.exists(qf):
             print(f"  skip {tag}: no conformal quantiles"); continue
         q = json.load(open(qf))
@@ -88,29 +93,29 @@ def spatial_pixel_arcsec(hdr):
     raise ValueError("no spatial axis in header")
 
 
-def fill_tile(m0, m1, m2, mask, floor):
-    """Training maps have no blank pixels: fill W with the detection floor, velocities by nearest neighbour."""
-    good = mask & np.isfinite(m1) & np.isfinite(m2)
-    if good.sum() == 0:
-        raise ValueError("tile without detected pixels")
-    _, (iy, ix) = distance_transform_edt(~good, return_indices=True)
-    return (np.where(good, np.maximum(m0, floor), floor), m1[iy, ix], m2[iy, ix])
+fill_tile = net.fill_masked_moments      # identical filling for training mocks and real tiles
 
 
 def process_cloud(name, cc, models):
     print(f"\n=== {name} ({cc['tracer']}, {cc['telescope']}) ===")
     with contextlib.redirect_stdout(io.StringIO()):
         data, hdr, wcs, vax = G.load_ppv_cube(os.path.join(cfg["obs_dir"], cc["fits"]))
-        m0, m1, m2, mask = G.compute_moment_maps(data, vax, noise_threshold=cfg["mask_sigma"])
+        m0, m1, m2, mask = G.compute_moment_maps(data, vax, noise_threshold=cfg["mask_sigma"],
+                                                 min_channels=cfg.get("min_channels", 3))
+        dclean, vmask, _ = G.signal_mask(data, cfg["mask_sigma"], cfg.get("min_channels", 3))
+    Tmasked = np.where(vmask, np.nan_to_num(dclean), 0.0).astype(np.float32)    # for tile-averaged spectra
+    del data, dclean, vmask
     pix = spatial_pixel_arcsec(hdr)
     up = 1.0
-    if min(m0.shape) < T_SIZE:
+    small = min(m0.shape) < T_SIZE
+    if small:
         with contextlib.redirect_stdout(io.StringIO()):
             u0, u1, u2, umask = G.upsample_moment_maps(m0, m1, m2, mask, target_size=T_SIZE)
         up = u0.shape[0] / m0.shape[0]
         m0, m1, m2, mask = u0, u1, u2, umask
     beam_pix = cc["beam_arcsec"] / pix * up
-    r = float(np.clip(1.0 / beam_pix, 0.4, 1.0))
+    native = next(iter(models.values()))[1].get("native_beam_pix", 1.0)
+    r = float(np.clip(native / beam_pix, 0.4, 1.0))
     cs = np.sqrt(KB * cc["T_K"] / (cfg["mu_sound"] * MH)) / 1e5
     tile_pc = T_SIZE * (pix / up) / 206265.0 * cc["distance_pc"]
     floor = np.nanpercentile(m0[mask], 1) if mask.any() else 1e-3
@@ -127,9 +132,16 @@ def process_cloud(name, cc, models):
         raw = torch.tensor(np.stack([a0, a1 / cs, a2 / cs])[:net.n_input_channels], dtype=torch.float32)
         x_in = torch.cat([net.preprocess_maps(raw), torch.full((1, T_SIZE, T_SIZE), r)], dim=0)
         xs.append(x_in)
+        # matched-scale observational estimate: width of the tile-averaged spectrum
+        # (tile mapped back to native pixels when the map was upsampled)
+        ys = slice(int(y / up), int((y + T_SIZE) / up)); xs_ = slice(int(x / up), int((x + T_SIZE) / up))
+        spec = Tmasked[:, ys, xs_].mean(axis=(1, 2))
+        mu_v = (spec * vax).sum() / spec.sum()
+        sig_tile = np.sqrt((spec * (vax - mu_v)**2).sum() / spec.sum())
         rows.append({"cloud": name, "tile_y": int(y), "tile_x": int(x), "coverage": float(cov),
                      "sigma_v_median_kms": float(np.nanmedian(m2[sl][mask[sl]])),
-                     "Ms_linewidth_naive": float(np.sqrt(3) * np.nanmedian(m2[sl][mask[sl]]) / cs)})
+                     "sigma_tile_spectrum_kms": float(sig_tile),
+                     "Ms_tile_spectrum": float(np.sqrt(3) * sig_tile / cs)})
     X = torch.stack(xs).to(net.device)
 
     for tag, (m, q) in models.items():
@@ -165,7 +177,7 @@ def process_cloud(name, cc, models):
         chi = row[f"chi_{head}"] if head else row["chi_kfold_mean"]
         ax.add_patch(Rectangle((row["tile_x"], row["tile_y"]), T_SIZE, T_SIZE, fill=False, ec="tab:red", lw=1.5))
         ax.text(row["tile_x"] + 4, row["tile_y"] + T_SIZE - 4,
-                f"Ms={Ms:.1f}\nχ={chi:.2f}\nlw={row['Ms_linewidth_naive']:.1f}",
+                f"Ms={Ms:.1f}\nχ={chi:.2f}\nobs={row['Ms_tile_spectrum']:.1f}",
                 color="tab:red", fontsize=8, va="top")
     ax.set_title(f"{name}: net9010 {args.mode} ({head or 'k-fold mean'}), T={cc['T_K']} K, "
                  f"tile {tile_pc:.1f} pc, r={r:.2f}")
@@ -186,17 +198,18 @@ for name, cc in cfg["clouds"].items():
         Ms = np.array([r[f"Ms_{tag}"] for r in rows]); chi = np.array([r[f"chi_{tag}"] for r in rows])
         print(f"  {tag:8s} Ms median {np.median(Ms):6.2f} [tiles {Ms.min():.2f}–{Ms.max():.2f}]   "
               f"chi median {np.median(chi):.3f}")
-    lw = np.median([r["Ms_linewidth_naive"] for r in rows])
-    print(f"  naive linewidth Ms = sqrt(3) median(sigma_v) / c_s = {lw:.2f}")
+    for r in rows:
+        print(f"    tile ({r['tile_y']:4d},{r['tile_x']:4d}) coverage {r['coverage']:.2f}: Ms from tile spectrum "
+              f"{r['Ms_tile_spectrum']:5.1f}  " + "  ".join(f"{t} {r[f'Ms_{t}']:5.1f}" for t in models))
     summary.append((info, rows))
 
 with open(os.path.join(cfg["output_dir"], "net9010_observations_summary.txt"), "w") as f:
     f.write(f"{'cloud':10s} {'tracer':10s} {'T_K':>4s} {'tile_pc':>7s} {'r':>5s} {'n':>3s} "
-            + " ".join(f"{'Ms_' + t:>12s}" for t in models) + f" {'chi_med':>8s} {'Ms_lw':>7s}\n")
+            + " ".join(f"{'Ms_' + t:>12s}" for t in models) + f" {'chi_med':>8s} {'Ms_tilespec':>11s}\n")
     for info, rows in summary:
         tagc = "foldall" if "foldall" in models else next(iter(models))
         f.write(f"{info['cloud']:10s} {info['tracer']:10s} {info['T_K']:4.0f} {info['tile_pc']:7.1f} {info['r']:5.2f} "
                 f"{len(rows):3d} " + " ".join(f"{np.median([r[f'Ms_{t}'] for r in rows]):12.2f}" for t in models)
                 + f" {np.median([r[f'chi_{tagc}'] for r in rows]):8.3f}"
-                + f" {np.median([r['Ms_linewidth_naive'] for r in rows]):7.2f}\n")
+                + f" {np.median([r['Ms_tile_spectrum'] for r in rows]):11.2f}\n")
 print(f"\nWrote {cfg['output_dir']}/net9010_observations_summary.txt")

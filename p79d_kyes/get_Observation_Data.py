@@ -110,7 +110,24 @@ def load_ppv_cube(fits_path, data_format='auto'):
     return data, header, wcs, velocity_axis
 
 
-def compute_moment_maps(data, velocity_axis, noise_threshold=3.0):
+def signal_mask(data, noise_threshold=3.0, min_channels=3, edge_channels=5):
+    """
+    Voxel mask used by compute_moment_maps: data > noise_threshold * noise in
+    runs of >= min_channels consecutive channels, with the noise estimated from
+    the first/last edge_channels channels. Returns (cleaned data, mask, noise).
+    """
+    data_clean = np.copy(data)
+    data_clean[data_clean < -1000] = np.nan
+    noise = np.nanstd(np.concatenate([data_clean[:edge_channels].flatten(),
+                                      data_clean[-edge_channels:].flatten()]))
+    mask = data_clean > noise_threshold * noise
+    if min_channels > 1:
+        from scipy.ndimage import binary_opening
+        mask = binary_opening(mask, structure=np.ones((min_channels, 1, 1), dtype=bool))
+    return data_clean, mask, noise
+
+
+def compute_moment_maps(data, velocity_axis, noise_threshold=3.0, min_channels=3):
     """
     Compute the three moment maps from PPV cube.
     
@@ -122,6 +139,11 @@ def compute_moment_maps(data, velocity_axis, noise_threshold=3.0):
         data: PPV cube [velocity, y, x] in K
         velocity_axis: Velocity values in km/s
         noise_threshold: Sigma threshold for masking noise
+        min_channels: a voxel is kept only if it belongs to a run of at least
+            this many consecutive channels above the threshold. Isolated noise
+            spikes far from the line otherwise enter moment 2 with a large
+            (v - v_c)^2 weight and inflate the dispersion (by ~50% in Perseus
+            and ~2x in Ophiuchus with 1). Use 1 for the old behaviour.
     
     Returns:
         moment0: Integrated intensity [K km/s]
@@ -130,23 +152,11 @@ def compute_moment_maps(data, velocity_axis, noise_threshold=3.0):
     """
     print("\nComputing moment maps...")
     
-    # Handle BLANK values (marked as -32768 in Taurus data)
-    data_clean = np.copy(data)
-    data_clean[data_clean < -1000] = np.nan
-
-    #Estimate noise from emission-free regions, use edge channels assumed to have no line emission
-    edge_channels = 5
-    noise_estimate = np.nanstd(np.concatenate([
-        data_clean[:edge_channels].flatten(),
-        data_clean[-edge_channels:].flatten()
-    ]))
-    
+    # Handle BLANK values (marked as -32768 in Taurus data); noise from the 5 edge channels on
+    # each side (assumed line-free); voxel mask: >threshold in >= min_channels consecutive channels
+    data_clean, mask, noise_estimate = signal_mask(data, noise_threshold, min_channels)
     print(f"Estimated noise: {noise_estimate:.4f} K")
-    threshold = noise_threshold * noise_estimate
-    print(f"Applying {noise_threshold}σ threshold: {threshold:.4f} K")
-    
-    #Create mask where emission is significant
-    mask = data_clean > threshold
+    print(f"Applying {noise_threshold}σ threshold: {noise_threshold * noise_estimate:.4f} K")
     
     #Velocity channel width (assuming uniform spacing)
     dv = np.abs(velocity_axis[1] - velocity_axis[0])
@@ -154,7 +164,13 @@ def compute_moment_maps(data, velocity_axis, noise_threshold=3.0):
     # Moment 0: Integrated intensity, for each (y, x) pixel, sum T_B across velocity weighted by channel width
     moment0 = np.nansum(np.where(mask, data_clean, 0.0), axis=0) * dv
     
-    emission_mask = moment0 > (noise_threshold * noise_estimate * dv * np.sqrt(len(velocity_axis)))
+    if min_channels > 1:
+        # detected = at least one run of >= min_channels channels above threshold; unlike the
+        # sqrt(N_channels) integrated-intensity cut this does not depend on the width of the
+        # velocity window (a false detection needs min_channels consecutive noise spikes)
+        emission_mask = mask.any(axis=0) & (moment0 > 0)
+    else:
+        emission_mask = moment0 > (noise_threshold * noise_estimate * dv * np.sqrt(len(velocity_axis)))
     
     #Moment 1: Velocity centroid, weighted average: v̄ = Σ(v·T_B·dv) / Σ(T_B·dv)
     velocity_3d = velocity_axis[:, np.newaxis, np.newaxis]

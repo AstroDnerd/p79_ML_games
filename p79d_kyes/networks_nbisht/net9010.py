@@ -45,6 +45,15 @@ data_file = os.environ.get("P79D_DATA_FILE",          # override for tests / oth
                            "/home/x-nbisht1/scratch/projects/p79d_dataset/p79d_mach_grid_256_v1.h5")
 ms_max    = 20.0        # drop images with Ms above this (sparse, under-resolved)
 
+# Which maps to train on. "images": training-unit maps (projected dataset, or the
+# noise-free 13CO maps). "images_obs": the 13CO dataset's noisy, masked
+# observation-pipeline maps, converted to training units and filled exactly as
+# predict_observations_net9010.py fills real tiles (fill_masked_moments).
+image_key = "images"
+# Short label added to every output name (e.g. "13co") so runs on different
+# datasets do not overwrite each other; "" for the projected dataset.
+run_tag   = ""
+
 # Compressibility target: "chi_v" (velocity) or "chi_w" (sqrt(rho) v, kinetic-
 # energy weighted). chi_space: "logit" models logit(chi) with a Gaussian, which
 # keeps predictions in (0, 1) and resolves the many small values; "linear"
@@ -95,9 +104,12 @@ n_mc_samples = 30
 
 def _read_dataset():
     """Images [N, 3, H, W] (float tensor) and a dict of per-sample metadata."""
-    print(f"Reading {data_file} …")
+    print(f"Reading {data_file} [{image_key}] …")
     with h5py.File(data_file, "r") as f:
-        data = torch.from_numpy(f["images"][:]).float()
+        if image_key == "images_obs":
+            data = obs_to_training_units(f["images_obs"][:], f["mask_obs"][:], float(f.attrs["sound_speed_kms"]))
+        else:
+            data = torch.from_numpy(f[image_key][:]).float()
         meta = {
             "Ms_act":  f["labels/Ms"][:],
             "chi_act": f[f"labels/{chi_field}"][:],
@@ -116,6 +128,33 @@ def _read_dataset():
     meta["Ms_mean"] = sim_ms_mean[meta["sim_id"]]
     print(f"  {len(data)} images with Ms <= {ms_max}, chi target = {chi_field} ({chi_space})")
     return data, meta, {"name": sim_names, "xi": sim_xi, "Ms_mean": sim_ms_mean}
+
+
+def fill_masked_moments(m0, m1, m2, mask, floor):
+    """
+    Observed maps have blank (masked) pixels; training maps must not. W gets the
+    detection floor, the velocity moments the value of the nearest detected
+    pixel. Shared by the 13CO training data and the real-cloud tiles.
+    """
+    from scipy.ndimage import distance_transform_edt
+    good = mask & np.isfinite(m1) & np.isfinite(m2)
+    if good.all():
+        return np.maximum(m0, floor), m1, m2
+    if not good.any():
+        raise ValueError("no detected pixels")
+    _, (iy, ix) = distance_transform_edt(~good, return_indices=True)
+    return np.where(good, np.maximum(m0, floor), floor), m1[iy, ix], m2[iy, ix]
+
+
+def obs_to_training_units(obs, mask, cs_kms):
+    """[N, 3, H, W] observed moments (K km/s, km/s, km/s) -> filled [W, v_c/c_s, sigma/c_s] tensor."""
+    out = np.empty(obs.shape, dtype=np.float32)
+    for i in range(len(obs)):
+        m = mask[i]
+        floor = np.percentile(obs[i, 0][m], 1) if m.any() else 1e-3
+        a0, a1, a2 = fill_masked_moments(obs[i, 0], obs[i, 1], obs[i, 2], m, floor)
+        out[i] = (a0, a1 / cs_kms, a2 / cs_kms)
+    return torch.from_numpy(out)
 
 
 def _pack(data, meta, idx):
@@ -706,7 +745,8 @@ def _plot_path(kind, tag=""):
     import os
     d = os.path.join(os.environ["HOME"], "plots")
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{kind}_net{idd}_{input_mode}{('_' + tag) if tag else ''}.png")
+    rt = f"_{run_tag}" if run_tag else ""
+    return os.path.join(d, f"{kind}_net{idd}{rt}_{input_mode}{('_' + tag) if tag else ''}.png")
 
 
 def _metrics(true, pred):

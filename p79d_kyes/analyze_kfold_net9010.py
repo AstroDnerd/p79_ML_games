@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 p = argparse.ArgumentParser()
 p.add_argument("--mode", choices=["allmom", "mom0"], default="allmom")
 p.add_argument("--compare", choices=["allmom", "mom0"], default=None)
+p.add_argument("--tag", default="", help="run tag used in training, e.g. 13co")
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
 p.add_argument("--plot_dir", default=os.path.join(os.environ["HOME"], "plots"))
 args = p.parse_args()
@@ -30,7 +31,9 @@ MS_BINS = [(0, 0.5), (0.5, 1), (1, 3), (3, 7), (7, 20.01)]
 
 
 def load(mode):
-    files = sorted(glob.glob(os.path.join(args.model_dir, f"net9010_{mode}_fold*_test.npz")))
+    tg = f"_{args.tag}" if args.tag else ""
+    files = sorted(f for f in glob.glob(os.path.join(args.model_dir, f"net9010{tg}_{mode}_fold*_test.npz"))
+                   if "foldall" not in f)
     if not files:
         raise SystemExit(f"No net9010_{mode}_fold*_test.npz in {args.model_dir}")
     parts = [dict(np.load(f, allow_pickle=True)) for f in files]
@@ -83,7 +86,8 @@ def report(d, mode):
 
 
 def path(kind, extra=""):
-    return os.path.join(args.plot_dir, f"{kind}_net9010_{args.mode}{extra}.png")
+    tg = f"_{args.tag}" if args.tag else ""
+    return os.path.join(args.plot_dir, f"{kind}_net9010{tg}_{args.mode}{extra}.png")
 
 
 d = load(args.mode)

@@ -6,27 +6,87 @@
   "mask_sigma": 3.0,
   "tile_size": 128,
   "clouds": {
-    "perseus":   {"fits": "perseus/PerA_13coFCRAO_F_xyv.fits.gz",   "tracer": "13CO(1-0)", "telescope": "FCRAO 14m (COMPLETE)",
-                  "beam_arcsec": 46.0, "distance_pc": 300.0, "T_K": 10.0,
-                  "n_tiles": 6, "min_coverage": 0.10, "max_overlap": 0.10, "Ms_literature": null, "Ms_literature_ref": null},
-    "ophiuchus": {"fits": "ophiucus/OphA_13coFCRAO_F_xyv.fits.gz",  "tracer": "13CO(1-0)", "telescope": "FCRAO 14m (COMPLETE)",
-                  "beam_arcsec": 46.0, "distance_pc": 137.0, "T_K": 10.0,
-                  "n_tiles": 4, "min_coverage": 0.10, "max_overlap": 0.10, "Ms_literature": null, "Ms_literature_ref": null},
-    "serpens":   {"fits": "serpens/serpens_13co_xyv.fit.gz",        "tracer": "13CO(1-0)", "telescope": "FCRAO 14m (COMPLETE)",
-                  "beam_arcsec": 46.0, "distance_pc": 436.0, "T_K": 10.0,
-                  "n_tiles": 2, "min_coverage": 0.10, "max_overlap": 0.50, "Ms_literature": null, "Ms_literature_ref": null},
-    "orion":     {"fits": "orion/Fig1.fits.gz",                     "tracer": "13CO(1-0)?", "telescope": "NRO 45m",
-                  "beam_arcsec": 22.0, "distance_pc": 400.0, "T_K": 20.0,
-                  "n_tiles": 4, "min_coverage": 0.10, "max_overlap": 0.10, "Ms_literature": null, "Ms_literature_ref": null},
-    "taurus":    {"fits": "taurus/DHT21_Taurus_interp.fits",        "tracer": "12CO(1-0)", "telescope": "CfA 1.2m (Dame et al. 2001)",
-                  "beam_arcsec": 504.0, "distance_pc": 140.0, "T_K": 10.0,
-                  "n_tiles": 2, "min_coverage": 0.0, "max_overlap": 0.0, "Ms_literature": null, "Ms_literature_ref": null}
+    "perseus": {
+      "fits": "perseus/PerA_13coFCRAO_F_xyv.fits.gz",
+      "tracer": "13CO(1-0)",
+      "telescope": "FCRAO 14m (COMPLETE)",
+      "beam_arcsec": 46.0,
+      "distance_pc": 300.0,
+      "T_K": 10.0,
+      "n_tiles": 6,
+      "min_coverage": 0.1,
+      "max_overlap": 0.1,
+      "Ms_literature": null,
+      "Ms_literature_ref": null
+    },
+    "ophiuchus": {
+      "fits": "ophiucus/OphA_13coFCRAO_F_xyv.fits.gz",
+      "tracer": "13CO(1-0)",
+      "telescope": "FCRAO 14m (COMPLETE)",
+      "beam_arcsec": 46.0,
+      "distance_pc": 137.0,
+      "T_K": 10.0,
+      "n_tiles": 4,
+      "min_coverage": 0.1,
+      "max_overlap": 0.1,
+      "Ms_literature": null,
+      "Ms_literature_ref": null
+    },
+    "serpens": {
+      "fits": "serpens/13co10.fits",
+      "tracer": "13CO(1-0)",
+      "telescope": "13co10.fits (GILDAS cube; telescope to confirm)",
+      "beam_arcsec": 24.8,
+      "distance_pc": 436.0,
+      "T_K": 10.0,
+      "n_tiles": 1,
+      "min_coverage": 0.05,
+      "max_overlap": 0.5,
+      "Ms_literature": null,
+      "Ms_literature_ref": null
+    },
+    "orion": {
+      "fits": "orion/Fig1.fits.gz",
+      "tracer": "13CO(1-0)",
+      "telescope": "NRO 45m (Shimajiri et al. 2014, Orion A)",
+      "beam_arcsec": 25.8,
+      "distance_pc": 400.0,
+      "T_K": 20.0,
+      "n_tiles": 4,
+      "min_coverage": 0.1,
+      "max_overlap": 0.1,
+      "Ms_literature": null,
+      "Ms_literature_ref": null
+    },
+    "taurus": {
+      "fits": "taurus/DHT21_Taurus_interp.fits",
+      "tracer": "12CO(1-0)",
+      "telescope": "CfA 1.2m (Dame et al. 2001)",
+      "beam_arcsec": 504.0,
+      "distance_pc": 140.0,
+      "T_K": 10.0,
+      "n_tiles": 2,
+      "min_coverage": 0.0,
+      "max_overlap": 0.0,
+      "Ms_literature": null,
+      "Ms_literature_ref": null
+    }
   },
   "notes": {
     "T_K": "10 K for the dark clouds and 20 K for Orion are placeholders; c_s scales as sqrt(T), so the predicted Ms scales as 1/sqrt(T) through the velocity channels",
-    "beam_arcsec": "FCRAO 13CO beam ~46 arcsec on 23 arcsec pixels; NRO 45m 13CO ~22 arcsec (check); CfA 8.4 arcmin",
+    "beam_arcsec": "FCRAO 13CO ~46 arcsec on 23 arcsec pixels; NRO 45m 13CO 25.8 arcsec (Shimajiri et al. 2014); CfA 8.4 arcmin",
     "taurus": "12CO, 0.65 km/s channels and a ~39 pc tile: far outside the training data, reported only as a sanity check",
-    "orion": "0.5 km/s channels: narrow lines are unresolved in velocity",
-    "Ms_literature": "fill from linewidth-based estimates (use observed linewidths, not derived dissipation times)"
-  }
+    "orion": "Orion A (Shimajiri et al. 2014). Orkisz et al. 2017 (Ms ~ 6, mostly solenoidal) is Orion B, a different cloud. 0.5 km/s channels.",
+    "Ms_literature": "fill from linewidth-based estimates (use observed linewidths, not derived dissipation times)",
+    "references": {
+      "perseus": "Arce et al. 2010 Table 5: 13CO FWHM 1.5-2.2 km/s, Tex 10-15 K over 0.6-2 pc regions (Ms ~5-8); Padoan et al. 2003: sigma_v = 2.0 km/s over ~30 pc (Ms ~14); Pineda et al. 2008: 13CO saturates above Av ~ 5",
+      "taurus": "Padoan et al. 2003: sigma_v = 1.0 km/s (Ms ~7); Panopoulou et al. 2014 use the FCRAO 13CO Taurus survey (consider replacing the CfA 12CO cube)",
+      "ophiuchus": "White et al. 2015 is JCMT CO/13CO/C18O J=3-2 of L1688, not the FCRAO 13CO(1-0) map used here",
+      "serpens": "Gong et al. 2021: IRAM-30m/APEX 13CO/C18O of the Serpens filament (0.07 pc, <=0.1 km/s)"
+    },
+    "min_channels": "voxels must be above mask_sigma in >= min_channels consecutive channels (removes isolated noise spikes); 1 = old behaviour",
+    "Ms_tile_spectrum": "matched-scale observational Ms per tile: sqrt(3) x sigma of the tile-averaged masked spectrum / c_s(T_K); the network predicts the 3D Ms of a box the size of the tile",
+    "serpens": "serpens_13co_xyv.fit.gz has edge-channel noise ~1.3 K, as large as the line (~1.2 K), so nothing passes 3 sigma; 13co10.fits has 0.16 K noise and a 1.5 K line, 24.8\" beam (BMAJ), 121x121 pixels (upsampled to 128)."
+  },
+  "min_channels": 3
 }

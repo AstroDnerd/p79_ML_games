@@ -33,17 +33,19 @@
       "Ms_literature_ref": null
     },
     "serpens": {
-      "fits": "serpens/13co10.fits",
+      "fits": "serpens/serpens_13co_xyv.fit.gz",
       "tracer": "13CO(1-0)",
-      "telescope": "13co10.fits (GILDAS cube; telescope to confirm)",
-      "beam_arcsec": 24.8,
+      "telescope": "FCRAO 14m (COMPLETE)",
+      "beam_arcsec": 46.0,
       "distance_pc": 436.0,
       "T_K": 10.0,
-      "n_tiles": 1,
-      "min_coverage": 0.05,
-      "max_overlap": 0.5,
+      "n_tiles": 4,
+      "min_coverage": 0.1,
+      "max_overlap": 0.1,
       "Ms_literature": null,
-      "Ms_literature_ref": null
+      "Ms_literature_ref": null,
+      "noise_rms_K": 0.14,
+      "blank_noisy_pixels": true
     },
     "orion": {
       "fits": "orion/Fig1.fits.gz",
@@ -84,9 +86,9 @@
       "ophiuchus": "White et al. 2015 is JCMT CO/13CO/C18O J=3-2 of L1688, not the FCRAO 13CO(1-0) map used here",
       "serpens": "Gong et al. 2021: IRAM-30m/APEX 13CO/C18O of the Serpens filament (0.07 pc, <=0.1 km/s)"
     },
-    "min_channels": "voxels must be above mask_sigma in >= min_channels consecutive channels (removes isolated noise spikes); 1 = old behaviour",
+    "min_channels": "voxels must be above mask_sigma in >= min_channels consecutive channels (removes isolated noise spikes). \"auto\": max(2, round(0.2 km/s / channel width)), i.e. 3 for 0.066 km/s FCRAO cubes, 2 for the 0.5-0.65 km/s NRO and CfA cubes",
     "Ms_tile_spectrum": "matched-scale observational Ms per tile: sqrt(3) x sigma of the tile-averaged masked spectrum / c_s(T_K); the network predicts the 3D Ms of a box the size of the tile",
-    "serpens": "serpens_13co_xyv.fit.gz has edge-channel noise ~1.3 K, as large as the line (~1.2 K), so nothing passes 3 sigma; 13co10.fits has 0.16 K noise and a 1.5 K line, 24.8\" beam (BMAJ), 121x121 pixels (upsampled to 128)."
+    "serpens": "COMPLETE FCRAO 13CO cube (23 arcsec pixels, 0.066 km/s; same setup as Perseus/Ophiuchus) at 436 pc (Ortiz-Leon et al. 2017). Replaces 13co10.fits (24.8 arcsec beam, 5 arcsec pixels, one tile, visually odd), dropped from the sample on 2026-10-28; old entry: {\"fits\": \"serpens/13co10.fits\", \"tracer\": \"13CO(1-0)\", \"telescope\": \"13co10.fits (GILDAS cube; telescope to confirm)\", \"beam_arcsec\": 24.8, \"distance_pc\": 436.0, \"T_K\": 10.0, \"n_tiles\": 1, \"min_coverage\": 0.05, \"max_overlap\": 0.5, \"Ms_literature\": null, \"Ms_literature_ref\": null, \"min_channels\": 3, \"min_channels_note\": \"3, not the 'auto' 2: this cube's channel noise is correlated, and 2-channel runs admit ~2600 off-line voxels (>5 km/s from the line) that raise the tile-spectrum sigma from 1.1 to 2.4 km/s\"} Noise: median per-pixel edge-channel rms 0.14 K; pixels with rms > 3x median (map edges, 6 pixels with |T| > 50 K) are blanked."
   },
-  "min_channels": 3
+  "min_channels": "auto"
 }

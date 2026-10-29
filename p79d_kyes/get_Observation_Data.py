@@ -110,16 +110,35 @@ def load_ppv_cube(fits_path, data_format='auto'):
     return data, header, wcs, velocity_axis
 
 
-def signal_mask(data, noise_threshold=3.0, min_channels=3, edge_channels=5):
+MIN_RUN_KMS = 0.2     # "auto" minimum run of detected channels, in km/s
+
+
+def min_channels_for(spec, channel_width_kms, min_run_kms=MIN_RUN_KMS, floor=2):
+    """
+    Minimum run of consecutive >threshold channels for a voxel to count as signal.
+    An integer is used as given. "auto" scales the run with the channel width so it
+    spans ~min_run_kms (3 channels at 0.066 km/s) but never fewer than `floor`
+    channels: with coarse channels (0.5 km/s) a fixed 3-channel run would reject
+    every line narrower than ~1.5 km/s, while 2 channels still suppress isolated
+    noise spikes (false-positive rate p^2 ~ 2e-6 per channel pair at 3 sigma).
+    """
+    if spec != "auto":
+        return int(spec)
+    return max(floor, int(round(min_run_kms / abs(channel_width_kms))))
+
+
+def signal_mask(data, noise_threshold=3.0, min_channels=3, edge_channels=5, noise=None):
     """
     Voxel mask used by compute_moment_maps: data > noise_threshold * noise in
     runs of >= min_channels consecutive channels, with the noise estimated from
-    the first/last edge_channels channels. Returns (cleaned data, mask, noise).
+    the first/last edge_channels channels unless given (pre-masked cubes such as
+    the MWISP cloud cubes have no noise to estimate). Returns (cleaned data, mask, noise).
     """
     data_clean = np.copy(data)
     data_clean[data_clean < -1000] = np.nan
-    noise = np.nanstd(np.concatenate([data_clean[:edge_channels].flatten(),
-                                      data_clean[-edge_channels:].flatten()]))
+    if noise is None:
+        noise = np.nanstd(np.concatenate([data_clean[:edge_channels].flatten(),
+                                          data_clean[-edge_channels:].flatten()]))
     mask = data_clean > noise_threshold * noise
     if min_channels > 1:
         from scipy.ndimage import binary_opening
@@ -127,7 +146,7 @@ def signal_mask(data, noise_threshold=3.0, min_channels=3, edge_channels=5):
     return data_clean, mask, noise
 
 
-def compute_moment_maps(data, velocity_axis, noise_threshold=3.0, min_channels=3):
+def compute_moment_maps(data, velocity_axis, noise_threshold=3.0, min_channels=3, noise=None):
     """
     Compute the three moment maps from PPV cube.
     
@@ -154,7 +173,7 @@ def compute_moment_maps(data, velocity_axis, noise_threshold=3.0, min_channels=3
     
     # Handle BLANK values (marked as -32768 in Taurus data); noise from the 5 edge channels on
     # each side (assumed line-free); voxel mask: >threshold in >= min_channels consecutive channels
-    data_clean, mask, noise_estimate = signal_mask(data, noise_threshold, min_channels)
+    data_clean, mask, noise_estimate = signal_mask(data, noise_threshold, min_channels, noise=noise)
     print(f"Estimated noise: {noise_estimate:.4f} K")
     print(f"Applying {noise_threshold}σ threshold: {noise_threshold * noise_estimate:.4f} K")
     

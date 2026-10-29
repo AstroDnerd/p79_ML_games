@@ -31,6 +31,7 @@ from scipy.ndimage import gaussian_filter
 
 import extract_sim_data as E
 import extract_sim_radmc as R
+import get_Observation_Data as G
 
 AV_PER_NH2 = 1.0 / 9.4e20        # A_V per N(H2) [cm^-2] (Bohlin et al. 1978: N_H = 1.87e21 A_V)
 
@@ -52,6 +53,40 @@ def mol_rc(rc, mol):
     return {**rc, "rest_frequency_hz": mol["rest_frequency_hz"]}
 
 
+def trim_lamda(src, dst, n_keep):
+    """Copy a LAMDA file keeping the lowest n_keep levels and the transitions among them."""
+    L = open(src).read().splitlines()
+    out, i = [], 0
+    def take_header(n):            # copy n lines verbatim
+        nonlocal i
+        out.extend(L[i:i + n]); i += n
+    take_header(5)                                         # !MOLECULE, name, !WEIGHT, weight, !NUMBER OF ENERGY LEVELS
+    n_lev = int(L[i].split()[0]); out.append(str(min(n_keep, n_lev))); i += 1
+    take_header(1)
+    out.extend(L[i:i + min(n_keep, n_lev)]); i += n_lev
+    def block(up_col):                                     # count line, header, rows filtered on (up, low) <= n_keep
+        nonlocal i
+        hdr_count = L[i - 1]; n = int(L[i].split()[0]); i += 1
+        hdr = L[i]; i += 1
+        rows = [r for r in L[i:i + n] if int(r.split()[up_col]) <= n_keep and int(r.split()[up_col + 1]) <= n_keep]
+        i += n
+        rows = [f"{k + 1:5d} " + " ".join(r.split()[1:]) for k, r in enumerate(rows)]
+        out.extend([str(len(rows)), hdr] + rows)
+    take_header(1); block(1)                               # radiative transitions
+    take_header(1); n_part = int(L[i].split()[0]); take_header(1)
+    for _ in range(n_part):
+        take_header(3)                                     # !COLLISIONS BETWEEN, partner, !NUMBER OF COLL TRANS
+        n_line = i; i += 1
+        take_header(4)                                     # !NUMBER OF COLL TEMPS, n, !COLL TEMPS, temps
+        n = int(L[n_line].split()[0]); hdr = L[i]; i += 1
+        rows = [r for r in L[i:i + n] if int(r.split()[1]) <= n_keep and int(r.split()[2]) <= n_keep]
+        i += n
+        out.insert(len(out) - 4, str(len(rows)))
+        out.extend([hdr] + [f"{k + 1:5d} " + " ".join(r.split()[1:]) for k, r in enumerate(rows)])
+    out.extend(L[i:])
+    open(dst, "w").write("\n".join(out) + "\n")
+
+
 def write_inputs(d, rho, v_kms, rc, n_H2):
     N = rho.shape[0]
     L = rc["box_length_pc"] * R.PC_CM
@@ -63,7 +98,10 @@ def write_inputs(d, rho, v_kms, rc, n_H2):
     lines = [f"2\n{len(rc['molecules'])}\n"]
     for mol in rc["molecules"]:
         R._write_binp(os.path.join(d, f"numberdens_{mol['name']}.binp"), [mol["abundance"] * nH2])
-        shutil.copy(mol["file"], os.path.join(d, f"molecule_{mol['name']}.inp"))
+        if lvg and rc.get("lvg_max_levels"):
+            trim_lamda(mol["file"], os.path.join(d, f"molecule_{mol['name']}.inp"), rc["lvg_max_levels"])
+        else:
+            shutil.copy(mol["file"], os.path.join(d, f"molecule_{mol['name']}.inp"))
         lines.append(f"{mol['name']}    leiden    0    0    {2 if lvg else 0}\n" + ("p-h2\no-h2\n" if lvg else ""))
     if lvg:
         opr = rc["ortho_para_ratio"]
@@ -88,6 +126,13 @@ def prepare_populations(d, rc):
     r = subprocess.run([rc["radmc3d_binary"], "calcpop", "writepop"], cwd=d, capture_output=True, text=True)
     if r.returncode != 0 or not glob.glob(os.path.join(d, "levelpop_*")):
         raise RuntimeError("RADMC-3D calcpop failed:\n" + (r.stdout + r.stderr)[-2000:])
+    # images read the stored populations (lines_mode 50); with lines_mode 3 every
+    # image call would solve the LVG populations again (identical result, 6x the cost)
+    p = os.path.join(d, "radmc3d.inp")
+    txt = open(p).read()                    # read before reopening: open(p, "w") truncates
+    if not re.search(r"lines_mode = \d+", txt):
+        raise RuntimeError(f"no lines_mode in {p}")
+    open(p, "w").write(re.sub(r"lines_mode = \d+", "lines_mode = 50", txt))
 
 
 def launch_image(d, rc, view, W, nch, imol):
@@ -291,7 +336,7 @@ def _reobserve_file(job):
                                            G_[f"v_{mt}_{il}"][()].astype(np.float64), ob["channel_width_kms"])
                     rng = np.random.default_rng([ob["seed"], zlib.crc32(sim.encode()), frame, il, ia, zlib.crc32(mt.encode())])
                     o, mk = R.observed_moments(Tb + rng.normal(0, ob["noise_rms_K"][mt], Tb.shape), v, rc,
-                                               min_channels=ob["min_channels"])
+                                               min_channels=G.min_channels_for(ob["min_channels"], ob["channel_width_kms"]))
                     obs.append(o); masks.append(mk)
                 for k, val in ((f"images_obs_{mt}_{tag}", np.stack(obs)), (f"mask_obs_{mt}_{tag}", np.stack(masks))):
                     if k in G_:

@@ -1,0 +1,103 @@
+{
+  "description": "LVG check of run 2: identical to radmc_co_v2.json (same n(H2) draws, views, shifts, noise seeds) but with LVG (Sobolev) level populations instead of LTE, on 5 low-density frames. Compare with the LTE run-2 images of the same frames (compare_lvg_lte.py).",
+  "radmc3d_binary": "/home/x-nbisht1/scripts/radmc3d/p79d_observations/radmc3d",
+  "molecules": [
+    {
+      "tag": "13co",
+      "name": "13_co",
+      "file": "/home/x-nbisht1/scripts/radmc3d/p79d_observations/13co_lamda.dat",
+      "abundance": 1.5e-06,
+      "rest_frequency_hz": 110201354279.8,
+      "mass_amu": 29.0
+    },
+    {
+      "tag": "12co",
+      "name": "12_co",
+      "file": "/home/x-nbisht1/scripts/radmc3d/p79d_observations/co.dat",
+      "abundance": 0.0001,
+      "rest_frequency_hz": 115271201800.0,
+      "mass_amu": 28.0
+    }
+  ],
+  "box_length_pc": 4.6,
+  "n_H2_sampling": {
+    "distribution": "loguniform",
+    "min_cm3": 100.0,
+    "max_cm3": 3000.0,
+    "seed": 20261006
+  },
+  "T_K": 10.0,
+  "mu_sound": 2.33,
+  "lines_mode": 3,
+  "ortho_para_ratio": 0.0,
+  "lvg_maxiter": 100,
+  "lvg_convcrit": 0.01,
+  "npix_rt": 256,
+  "target_res": 128,
+  "channel_width_kms": 0.066,
+  "velocity_quantile": 0.9995,
+  "velocity_margin_thermal_sigmas": 4.0,
+  "edge_channels": 6,
+  "ms_max_frame": 22.0,
+  "labels_from": "/home/x-nbisht1/scratch/projects/p79d_dataset/p79d_mach_grid_256_v1.h5",
+  "output_name": "p79d_mach_grid_256_co_lvg.h5",
+  "observe": {
+    "fcrao500": {
+      "beam_fwhm_arcsec": 46.0,
+      "distance_pc": 500.0,
+      "channel_width_kms": 0.066,
+      "noise_rms_K": {
+        "13co": 0.2,
+        "12co": 0.25
+      },
+      "mask_sigma": 3.0,
+      "min_channels": "auto",
+      "seed": 1
+    },
+    "mwisp": {
+      "beam_fwhm_arcsec": 50.0,
+      "distance_pc": 1000.0,
+      "channel_width_kms": 0.16,
+      "noise_rms_K": {
+        "13co": 0.25,
+        "12co": 0.47
+      },
+      "mask_sigma": 3.0,
+      "min_channels": "auto",
+      "seed": 2
+    },
+    "nro_orion": {
+      "beam_fwhm_arcsec": 25.8,
+      "distance_pc": 400.0,
+      "channel_width_kms": 0.5,
+      "noise_rms_K": {
+        "13co": 0.2,
+        "12co": 0.3
+      },
+      "mask_sigma": 3.0,
+      "min_channels": "auto",
+      "seed": 3
+    }
+  },
+  "notes": {
+    "n_H2_sampling": "one log-uniform draw per (simulation, frame), shared by its three lines of sight; mean A_V ~ 1.5-45 for the 4.6 pc box (13CO saturates above A_V ~ 5, Pineda et al. 2008)",
+    "abundances": "X(12CO) = 1e-4, 12C/13C ~ 65 -> X(13CO) = 1.5e-6 (run 1 used 1e-6 for 13CO)",
+    "lines_mode": "3 = LVG; populations solved once per frame (calcpop, ~1.5 h serial at 256^3), images read them with lines_mode 50",
+    "ortho_para_ratio": "o-H2 / p-H2; 0 for cold (10 K) gas",
+    "ms_max_frame": "frames with Ms above this are skipped (training uses Ms <= 20; these were the slowest frames in run 1)",
+    "labels_from": "3D labels are copied from the projected dataset (identical frames) instead of being recomputed",
+    "observe": "survey-like re-observations made from the stored noise-free cubes: beam, distance (beam size in pixels), channel width (cubes are rebinned), per-line noise. MWISP noise from DR1 (0.25 K 13CO, 0.47 K 12CO); MWISP distance is a placeholder",
+    "molecule files": "co.dat is the LAMDA 12CO file; 13co_lamda.dat is the LAMDA 13C16O file",
+    "min_channels": "\"auto\": max(2, round(0.2 km/s / channel width)) -> fcrao500 3, mwisp 2, nro_orion 2 (get_Observation_Data.min_channels_for)",
+    "lvg_frames": "one frame per forcing, Ms 3.4-7, n(H2) ~ 100, 200, 300, 600, 1000 cm^-3 (run-2 draws), where LTE is least accurate",
+    "lvg_max_levels": "LAMDA files trimmed to the lowest 15 levels for LVG (E_u(J=14) ~ 580 K for 12CO; only J <= 9 are populated above 1e-15 at 10 K): ~20x cheaper populations, ~3x less memory; images identical (32^3 test)"
+  },
+  "lvg_frames": {
+    "xi_0_mach65": 206,
+    "xi_0.25_mach31.1": 236,
+    "xi_0.5_mach50": 185,
+    "xi_0.75_mach45": 186,
+    "xi_1_mach43": 220
+  },
+  "lvg_max_levels": 15
+}

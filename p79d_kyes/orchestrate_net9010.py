@@ -98,7 +98,95 @@ def plan_run2():
             "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
 
 
-PLANS = {"run2": plan_run2}
+def plan_tests1():
+    """Mask augmentation (projected + run-2 13CO) and alternative compressibility targets (chi_w, b)."""
+    proj = f"{DATA}/p79d_mach_grid_256_v1.h5"
+    co2  = f"{DATA}/p79d_mach_grid_256_co_v2_fcrao500.h5"
+    spec = [  # (name, group/tag, fold, extra args, memory GB)
+        ("projmask_fall",   "projmask",   "all", f"--data_file {proj} --image_key images --mask_aug_prob 0.5", 56),
+        ("co2_13mask_fall", "co2_13mask", "all", f"--data_file {co2} --image_key images_obs_13co --mask_aug_prob 0.5", 56),
+        ("chiw_f0",         "chiw",       "0",   f"--data_file {proj} --chi_field chi_w", 56),
+        ("b_f0",            "b",          "0",   f"--data_file {proj} --chi_field b --chi_space log", 56),
+        ("projmask_f0",     "projmask",   "0",   f"--data_file {proj} --image_key images --mask_aug_prob 0.5", 56),
+        ("co2_13mask_f0",   "co2_13mask", "0",   f"--data_file {co2} --image_key images_obs_13co --mask_aug_prob 0.5", 56),
+        ("chiw_f1",         "chiw",       "1",   f"--data_file {proj} --chi_field chi_w", 56),
+        ("b_f1",            "b",          "1",   f"--data_file {proj} --chi_field b --chi_space log", 56),
+    ]
+    jobs = []
+    for name, tag, fold, extra, mem in spec:
+        out = (f"{MODEL_DIR}/net9010_{tag}_allmom_fold{fold}_test.json" if fold != "all"
+               else f"{MODEL_DIR}/conformal_quantiles_9010_{tag}_allmom_fold{fold}.json")
+        jobs.append({"name": name, "group": tag, "fold": fold,
+                     "args": f"--mode allmom --fold {fold} {extra} --tag {tag}", "outputs": [out],
+                     "mem_gb": mem, "time_h": 9.0, "time_h0": 9.0, "state": "queued", "attempts": []})
+    return {"name": "tests1", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
+def plan_tests2():
+    """Mask augmentation on the remaining projected folds; the column-density (mom0) k-fold + final model."""
+    proj = f"{DATA}/p79d_mach_grid_256_v1.h5"
+    spec = [("projmask", "allmom", f, "--mask_aug_prob 0.5") for f in ("1", "2", "3", "4")]
+    spec += [("mom0", "mom0", f, "") for f in ("0", "1", "2", "3", "4", "all")]
+    order = [spec[i] for i in (0, 4, 1, 5, 2, 6, 3, 7, 8, 9)]      # interleave the two groups
+    jobs = []
+    for tag, mode, fold, extra in order:
+        stem = f"9010_{tag}_{mode}"
+        out = (f"{MODEL_DIR}/net{stem}_fold{fold}_test.json" if fold != "all"
+               else f"{MODEL_DIR}/conformal_quantiles_{stem}_fold{fold}.json")
+        jobs.append({"name": f"{tag}_f{fold}", "group": tag, "fold": fold, "mode": mode,
+                     "args": f"--mode {mode} --fold {fold} --data_file {proj} --image_key images {extra} --tag {tag}",
+                     "outputs": [out], "mem_gb": 56, "time_h": 9.0, "time_h0": 9.0,
+                     "state": "queued", "attempts": []})
+    return {"name": "tests2", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
+def plan_smooth():
+    """Projected + mask augmentation with the time-smoothed chi_v (1 crossing time), chi loss
+    only at Ms >= 2, and the density head (ln b_lin, ln sigma_s); 5 folds + final model."""
+    proj  = f"{DATA}/p79d_mach_grid_256_v1.h5"
+    extra = "--mask_aug_prob 0.5 --chi_smooth_tc 1.0 --chi_ms_min 2 --dens_head"
+    jobs = []
+    for fold in ("0", "1", "2", "3", "4", "all"):
+        out = (f"{MODEL_DIR}/net9010_smooth_allmom_fold{fold}_test.json" if fold != "all"
+               else f"{MODEL_DIR}/conformal_quantiles_9010_smooth_allmom_fold{fold}.json")
+        jobs.append({"name": f"smooth_f{fold}", "group": "smooth", "fold": fold, "mode": "allmom",
+                     "args": f"--mode allmom --fold {fold} --data_file {proj} --image_key images {extra} --tag smooth",
+                     "outputs": [out], "mem_gb": 48, "time_h": 8.0, "time_h0": 8.0,
+                     "state": "queued", "attempts": []})
+    return {"name": "smooth", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
+def plan_final():
+    """Final tables on the full suite (with the 3 resynced runs): every input type, 5 folds + final
+    model each, all with the density head (ln b_lin, ln sigma_s); raw chi_v, no Ms cut in training."""
+    proj, r1, r2 = (f"{DATA}/p79d_mach_grid_256_v1.h5", f"{DATA}/p79d_mach_grid_256_13co_v1_fcrao500_v2.h5",
+                    f"{DATA}/p79d_mach_grid_256_co_v2_fcrao500.h5")
+    variants = [  # (tag, mode, data, image_key, extra, memory GB)
+        ("final_proj",   "allmom", proj, "images", "--mask_aug_prob 0.5", 56),
+        ("final_mom0",   "mom0",   proj, "images", "", 52),
+        ("final_13co",   "allmom", r1,   "images_obs", "", 56),
+        ("final_co13",   "allmom", r2,   "images_obs_13co", "", 56),
+        ("final_co12",   "allmom", r2,   "images_obs_12co", "", 56),
+        ("final_coboth", "allmom", r2,   "images_obs_13co+images_obs_12co", "", 64),
+    ]
+    jobs = []
+    for fold in ("0", "1", "2", "3", "4", "all"):            # interleaved, so every group finishes early folds first
+        for tag, mode, data, key, extra, mem in variants:
+            out = (f"{MODEL_DIR}/net9010_{tag}_{mode}_fold{fold}_test.json" if fold != "all"
+                   else f"{MODEL_DIR}/conformal_quantiles_9010_{tag}_{mode}_fold{fold}.json")
+            jobs.append({"name": f"{tag}_f{fold}", "group": tag, "fold": fold, "mode": mode,
+                         "args": f"--mode {mode} --fold {fold} --data_file {data} --image_key {key} {extra} "
+                                 f"--dens_head --tag {tag}".replace("  ", " "),
+                         "outputs": [out], "mem_gb": mem, "time_h": 10.0, "time_h0": 10.0,
+                         "state": "queued", "attempts": []})
+    return {"name": "final", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
+PLANS = {"run2": plan_run2, "tests1": plan_tests1, "tests2": plan_tests2, "smooth": plan_smooth, "final": plan_final}
 
 
 # ─── STATE ───────────────────────────────────────────────────────────────────
@@ -219,8 +307,10 @@ def pool_finished_groups(state):
             continue
         folds = [j for j in state["jobs"] if j["group"] == g and j["fold"] != "all"]
         if folds and all(j["state"] == "done" for j in folds):
-            out = f"{MODEL_DIR}/kfold_summary_{g}_allmom.txt"
-            rc, o, e = sh(f"cd {REPO} && python analyze_kfold_net9010.py --mode allmom --tag {g} "
+            mode = folds[0].get("mode", "allmom")
+            out = f"{MODEL_DIR}/kfold_summary_{g}_{mode}.txt"
+            tag = f"--tag {g}" if g else ""
+            rc, o, e = sh(f"cd {REPO} && python analyze_kfold_net9010.py --mode {mode} {tag} "
                           f"> {out} 2>&1")
             log(f"pooled {g} -> {out} (rc {rc})")
             state["groups_pooled"].append(g)

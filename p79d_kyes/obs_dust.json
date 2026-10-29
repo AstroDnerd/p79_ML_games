@@ -1,0 +1,66 @@
+{
+  "description": "Herschel dust column-density maps for the net9010 mom0 (column density only) model. Paths are relative to obs_dir. Distances and beams are ASSUMPTIONS taken from the release papers; edit them here.",
+  "obs_dir": "/home/x-nbisht1/projects/p79d_dataset/observations/herschel",
+  "output_dir": "/home/x-nbisht1/plots/observations_net9010_dust",
+  "tile_size": 128,
+  "notes": {
+    "units": "the mom0 input is ln(Sigma / <Sigma>_tile), so any map proportional to N(H2) works: N(H2) in cm^-2 or the 353 GHz optical depth tau (Herschel-Planck maps). Only the zero point matters: background/foreground subtraction changes the contrast.",
+    "resolution": "HGBS low-res maps 36.3 arcsec (SPIRE 500), high-res 18.2 arcsec (SPIRE 250, Palmeirim et al. 2013 App. A). The pixel grid oversamples the beam (3-6 arcsec pixels); regrid so the beam spans ~2 pixels before tiling, or tiles cover only ~0.1-0.3 pc.",
+    "matching": "for the CO comparison, use regions covered by both: Perseus (FCRAO), Ophiuchus L1688 (FCRAO OphA), Orion A (NRO), Taurus L1495 (CfA 12CO / FCRAO 13CO when ingested). Orion B, Aquila, Musca and Chamaeleon are dust-only.",
+    "not_available": "HGBS N(H2) maps of Perseus, Orion A, Serpens, Lupus, IC5146, Cepheus and Corona Australis are on the CEA archive (gouldbelt-herschel.cea.fr), which refused connections on 2026-10-26; IRSA holds only their band images. Perseus and Orion A use the Herschel+Planck maps of Zari et al. 2016 and Lombardi et al. 2014 instead."
+  },
+  "regions": {
+    "perseus": {
+      "fits": "perseus/planck_herschel_fit2-a.fits", "plane": 0, "units": "tau353",
+      "beam_arcsec": 18.0, "distance_pc": 300.0, "co_counterpart": "perseus",
+      "alt_fits": "perseus/planck_herschel_fit.fits (36 arcsec, full SED fit, 18 arcsec pixels); plane 0 = tau (header PLANE1), 9 arcsec pixels",
+      "source": "Zari et al. 2016, A&A 587, A106 (CDS J/A+A/587/A106)"
+    },
+    "ophiuchus_L1688": {
+      "fits": "ophiuchus_L1688/HGBS_oph_l1688_hires_column_density_map.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 18.2, "distance_pc": 139.0, "co_counterpart": "ophiuchus",
+      "alt_fits": "ophiuchus_L1688/HGBS_oph_l1688_column_density_map.fits (36.3 arcsec)",
+      "source": "HGBS, Ladjelate et al. 2020, A&A 638, A74 (CDS J/A+A/638/A74)"
+    },
+    "orionA": {
+      "fits": "orionA/planck_herschel.fits.gz", "plane": 0, "units": "tau353",
+      "beam_arcsec": 36.0, "distance_pc": 400.0, "co_counterpart": "orion",
+      "source": "Lombardi et al. 2014, A&A 566, A45 (CDS J/A+A/566/A45); plane 0 = tau353 (header PLANE1), 15 arcsec pixels"
+    },
+    "taurus_L1495": {
+      "fits": "taurus_L1495/HGBS_taurus_L1495_column_density_map.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 18.2, "distance_pc": 140.0, "co_counterpart": "taurus",
+      "source": "HGBS, Palmeirim et al. 2013; Marsh et al. 2016 (IRSA HGBS)"
+    },
+    "orionB": {
+      "fits": "orionB/HGBS_orionB_column_density_map.fits.gz", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 18.2, "distance_pc": 400.0, "co_counterpart": null,
+      "source": "HGBS, Konyves et al. 2020, A&A 635, A34 (CDS J/A+A/635/A34); Orkisz et al. 2017 give Ms ~ 6 from IRAM 13CO"
+    },
+    "aquila": {
+      "fits": "aquila/HGBS_aquilaM2_column_density_map.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 18.2, "distance_pc": 260.0, "co_counterpart": null,
+      "source": "HGBS, Konyves et al. 2015 (IRSA HGBS); distance 260 pc as in the release (436 pc from VLBA, Ortiz-Leon et al. 2017)"
+    },
+    "musca": {
+      "fits": "musca/HGBS_musca_column_density_map.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 18.2, "distance_pc": 140.0, "co_counterpart": null,
+      "source": "HGBS, Cox et al. 2016 (IRSA HGBS)"
+    },
+    "chamI": {
+      "fits": "chamaeleon/chamI-coldens.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 36.3, "distance_pc": 192.0, "co_counterpart": null,
+      "source": "HGBS (IRSA HGBS); check the header for the resolution"
+    },
+    "chamII": {
+      "fits": "chamaeleon/chamII-coldens.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 36.3, "distance_pc": 198.0, "co_counterpart": null,
+      "source": "HGBS (IRSA HGBS); check the header for the resolution"
+    },
+    "chamIII": {
+      "fits": "chamaeleon/chamIII-coldens.fits", "plane": 0, "units": "N_H2",
+      "beam_arcsec": 36.3, "distance_pc": 192.0, "co_counterpart": null,
+      "source": "HGBS (IRSA HGBS); check the header for the resolution"
+    }
+  }
+}

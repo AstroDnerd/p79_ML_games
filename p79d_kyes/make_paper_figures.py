@@ -153,34 +153,14 @@ def fig_chi_xi():
 # ─── 3. Architecture schematic ───────────────────────────────────────────────
 
 def fig_architecture():
-    fig, ax = plt.subplots(figsize=(COL2, 1.9))
-    ax.set_xlim(0, 100); ax.set_ylim(0, 24); ax.axis("off")
-    boxes = [
-        (1,  "input\n$\\ln\\Sigma$, $v_c$, $\\ln\\sigma_v$\n+ resolution $r$\n$[4,128,128]$", "#dce9f5"),
-        (17, "CNN stem\n3$\\times$conv 3$\\times$3\n(32, 64, 64) + BN\nReLU, maxpool\n$[64,64,64]$", "#cfe8d5"),
-        (33, "patch embed\n8$\\times$8 patches\n64 tokens $\\times$ 384\n+ class token\n+ positions", "#fbe5c8"),
-        (49, "transformer\n6 blocks, 6 heads\nMLP 1536, GELU\ndropout 0.1\n(MC dropout)", "#f3d6e4"),
-        (65, "class token\nLayerNorm", "#e6e0f3"),
-    ]
-    for x, txt, c in boxes:
-        ax.add_patch(FancyBboxPatch((x, 4), 13, 16, boxstyle="round,pad=0.4", fc=c, ec="0.3", lw=0.6))
-        ax.text(x + 6.5, 12, txt, ha="center", va="center", fontsize=6.3)
-    for x in (14.5, 30.5, 46.5, 62.5):
-        ax.add_patch(FancyArrowPatch((x, 12), (x + 2.2, 12), arrowstyle="-|>", mutation_scale=7, lw=0.7, color="0.3"))
-    for y, txt in ((17.0, "head $\\mathcal{M}_s$\n$\\mu$, $\\ln\\sigma^2$ of $\\ln\\mathcal{M}_s$; $T_{\\mathcal{M}}$"),
-                   (7.0, "head $\\chi$\n$\\mu$, $\\ln\\sigma^2$ of logit $\\chi_v$; $T_\\chi$")):
-        ax.add_patch(FancyArrowPatch((78.5, 12), (81, y), arrowstyle="-|>", mutation_scale=7, lw=0.7, color="0.3"))
-        ax.add_patch(FancyBboxPatch((81, y - 3.3), 18, 6.6, boxstyle="round,pad=0.3", fc="#eeeeee", ec="0.3", lw=0.6))
-        ax.text(90, y, txt, ha="center", va="center", fontsize=6)
-    ax.text(90, 0.8, "30 MC passes $\\rightarrow$ conformal intervals", ha="center", fontsize=6, style="italic")
-    save(fig, "architecture")
+    """The architecture figure is a draw.io diagram (~/plots/ML_Model_arch/p79d_paper_net9010/make_diagram.py)."""
+    src = "/home/x-nbisht1/plots/ML_Model_arch/p79d_paper_net9010/p79d_paper_net9010.png"
+    shutil.copy(src, f"{OUT}/fig_architecture.png"); print("copied", src)
 
-
-# ─── 4. Ms: predicted vs true + residuals, three datasets ────────────────────
 
 def fig_ms_scatter():
     sets = [("", "projected maps"), ("13cov2", r"synthetic $^{13}$CO (run 1)"),
-            ("co2_both", r"run 2: $^{13}$CO + $^{12}$CO (draft)")]
+            ("co2_both", r"run 2: $^{13}$CO + $^{12}$CO")]
     sets = [(t, l, pooled(t)) for t, l in sets]
     sets = [s for s in sets if s[2] is not None]
     fig, axes = plt.subplots(2, len(sets), figsize=(COL2, 3.9), sharex=True,
@@ -400,7 +380,7 @@ def fig_obs_maps():
 # ─── 13. Observed clouds: predictions vs matched-scale Ms ────────────────────
 
 def fig_obs_compare():
-    runs = [("", "projected maps"), ("13cov2", r"$^{13}$CO run 1 (v2)"), ("co2_13", r"run 2 $^{13}$CO")]
+    runs = [("projmask", "projected + mask aug."), ("13cov2", r"$^{13}$CO run 1 (v2)"), ("co2_13", r"run 2 $^{13}$CO")]
     marks = {"perseus": "o", "ophiuchus": "s", "orion": "D", "serpens": "^"}
     fig, axes = plt.subplots(1, len(runs), figsize=(COL2, 2.5), sharey=True, gridspec_kw={"wspace": 0.06})
     for ax, (tag, label) in zip(axes, runs):
@@ -446,6 +426,73 @@ def fig_linewidth_scale():
     ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlabel("scale $L$ [pc]"); ax.set_ylabel(r"$\mathcal{M}_s$ from linewidth")
     ax.legend(frameon=False, fontsize=5.5, loc="upper left")
     save(fig, "linewidth_scale")
+
+
+# ─── 15. MWISP: network vs tile-spectrum Ms, by tile size ────────────────────
+
+def mwisp_tiles(tag):
+    """Every MWISP tile of one model with its cloud's tile size in pc (from the summary)."""
+    import pandas as pd
+    d = f"{PLOTS}/observations_net9010_mwisp_{tag}"
+    size = {}
+    for line in open(f"{d}/net9010_observations_summary.txt").read().splitlines()[1:]:
+        p = line.split()
+        if len(p) > 4 and p[0].startswith("G"):
+            size[p[0]] = float(p[3])
+    t = pd.concat([pd.read_csv(f) for f in sorted(glob.glob(f"{d}/G*_tiles.csv"))])
+    t["tile_pc"] = t["cloud"].map(size)
+    return t.dropna(subset=["tile_pc"])
+
+
+def fig_mwisp():
+    runs = [("co2_13", r"run 2, $^{13}$CO"), ("co2_both", r"run 2, $^{13}$CO + $^{12}$CO")]
+    fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.7), sharey=True, gridspec_kw={"wspace": 0.06})
+    from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
+    for ax, (tag, label) in zip(axes, runs):
+        t = mwisp_tiles(tag)
+        big = t["tile_pc"] > 10
+        ax.scatter(t.loc[big, "Ms_tile_spectrum"], t.loc[big, "Ms_foldall"], s=10, marker="x", color="0.6", lw=0.6,
+                   label=r"tile $>10$ pc", zorder=2)
+        sc = ax.scatter(t.loc[~big, "Ms_tile_spectrum"], t.loc[~big, "Ms_foldall"], c=t.loc[~big, "tile_pc"],
+                        cmap="viridis", vmin=2, vmax=10, s=16, edgecolor="k", lw=0.3, label=r"tile $\leq10$ pc", zorder=3)
+        x = np.array([1, 60])
+        ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 1.4 * x, "k:", lw=0.6)
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(2, 50); ax.set_ylim(2, 30)
+        ax.set_title(label); ax.set_xlabel(r"$\mathcal{M}_s^{\rm obs}=\sqrt{3}\,\sigma_{\rm tile}/c_s$")
+        for axis in (ax.xaxis, ax.yaxis):
+            axis.set_major_locator(FixedLocator([2, 5, 10, 20])); axis.set_minor_locator(NullLocator())
+            axis.set_major_formatter(ScalarFormatter())
+    axes[0].set_ylabel(r"predicted $\mathcal{M}_s$ (final model)")
+    axes[0].legend(frameon=False, fontsize=6, loc="upper left")
+    cb = fig.colorbar(sc, ax=axes, pad=0.01, fraction=0.03); cb.set_label("tile size [pc]")
+    save(fig, "mwisp")
+
+
+# ─── 16. Herschel dust: column-density model on the CO tiles ─────────────────
+
+def fig_dust():
+    import pandas as pd
+    t = pd.read_csv(f"{PLOTS}/observations_net9010_dust/dust_matched_tiles.csv")
+    marks = {"perseus": ("o", "Perseus"), "ophiuchus": ("s", "Ophiuchus"), "orion": ("D", "Orion A")}
+    fig, ax = plt.subplots(figsize=(COL1, 2.6))
+    for cloud, (mk, name) in marks.items():
+        s = t[t["co_cloud"] == cloud]
+        if s.empty:
+            continue
+        ax.scatter(s["Ms_CO_tile_spectrum"], s["Ms_kfold_mean"], marker=mk, s=18, color="#d95f02", edgecolor="k", lw=0.3,
+                   label=f"{name}, dust", zorder=3)
+        ax.scatter(s["Ms_CO_tile_spectrum"], s["Ms_CO_projmask_kfold"], marker=mk, s=18, facecolor="none",
+                   edgecolor="#1b9e77", lw=0.7, label=f"{name}, $^{{13}}$CO", zorder=3)
+        ax.plot(np.c_[s["Ms_CO_tile_spectrum"], s["Ms_CO_tile_spectrum"]].T,
+                np.c_[s["Ms_kfold_mean"], s["Ms_CO_projmask_kfold"]].T, color="0.7", lw=0.5, zorder=1)
+    x = np.array([1, 40])
+    ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 0.5 * x, "k:", lw=0.6)
+    ax.text(18, 8.0, r"$\times0.5$", fontsize=6)
+    ax.set_xlim(4, 22); ax.set_ylim(1.5, 22)
+    ax.set_xlabel(r"$\mathcal{M}_s^{\rm obs}$ from the $^{13}$CO tile spectrum")
+    ax.set_ylabel(r"predicted $\mathcal{M}_s$ (5-fold mean)")
+    ax.legend(frameon=False, fontsize=5, loc="upper left", ncol=2)
+    save(fig, "dust")
 
 
 FIGS = {k[4:]: v for k, v in globals().items() if k.startswith("fig_") and callable(v)}

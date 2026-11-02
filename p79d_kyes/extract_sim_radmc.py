@@ -344,7 +344,7 @@ def _reobserve_file(job):
                 Tb = gaussian_filter(T, sigma=(beam_sigma, beam_sigma, 0), mode="wrap")
                 rng = np.random.default_rng([seed, zlib.crc32(name.encode()), frame, il, ia])
                 o, mk = observed_moments(Tb + rng.normal(0.0, ob["noise_rms_K"], Tb.shape), v, rc,
-                                         min_channels=ob["min_channels"])
+                                         min_channels=G.min_channels_for(ob["min_channels"], ob.get("channel_width_kms", rc["channel_width_kms"])))
                 obs.append(o); masks.append(mk); fd.append(float(mk.mean()))
             for k, val in ((f"images_obs_{tag}", np.stack(obs)), (f"mask_obs_{tag}", np.stack(masks)),
                            (f"frac_detected_{tag}", np.array(fd))):

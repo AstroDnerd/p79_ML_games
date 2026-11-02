@@ -33,7 +33,7 @@ sys.exit(1 if bad > 10 else 0)
 EOF
 
 # projected
-P=$(sbatch --parsable -J extract_p79d -p shared -c 8 -t 06:00:00 -A $A --array=$(echo $SIMS | tr ' ' ,) \
+P=$(sbatch --parsable -J extract_p79d -p shared -c 8 -t 09:00:00 -A $A --array=$(echo $SIMS | tr ' ' ,) \
     -o $OUT/logs_extract/extract_%a.out \
     --wrap "source ~/.bashrc; export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=8; \
             python extract_sim_data.py extract --config $CONFIG --index \$SLURM_ARRAY_TASK_ID")
@@ -59,7 +59,7 @@ R1P=$(sbatch --parsable -J post_13co -p shared -c 32 --mem=24G -t 02:00:00 -A $A
               python extract_sim_radmc.py merge --config $CONFIG --rt radmc_13co.json --obs fcrao500_v2")
 
 # CO run 2
-R2=$(sbatch --parsable -J co_p79d -p shared -c 10 --mem=20G -t 16:00:00 -A $A --array=$TASKS \
+R2=$(sbatch --parsable -J co_p79d -p shared -c 10 --mem=20G -t 30:00:00 -A $A --array=$TASKS \
      -o $OUT/logs_co/co_%a.out \
      --wrap "source ~/.bashrc; export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=10; \
              export TMPDIR=/tmp/co_\${SLURM_JOB_ID}_\${SLURM_ARRAY_TASK_ID}; mkdir -p \$TMPDIR; \

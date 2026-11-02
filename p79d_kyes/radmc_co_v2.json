@@ -51,7 +51,7 @@
         "12co": 0.25
       },
       "mask_sigma": 3.0,
-      "min_channels": 3,
+      "min_channels": "auto",
       "seed": 1
     },
     "mwisp": {
@@ -63,7 +63,7 @@
         "12co": 0.47
       },
       "mask_sigma": 3.0,
-      "min_channels": 3,
+      "min_channels": "auto",
       "seed": 2
     },
     "nro_orion": {
@@ -75,7 +75,7 @@
         "12co": 0.3
       },
       "mask_sigma": 3.0,
-      "min_channels": 3,
+      "min_channels": "auto",
       "seed": 3
     }
   },
@@ -87,6 +87,7 @@
     "ms_max_frame": "frames with Ms above this are skipped (training uses Ms <= 20; these were the slowest frames in run 1)",
     "labels_from": "3D labels are copied from the projected dataset (identical frames) instead of being recomputed",
     "observe": "survey-like re-observations made from the stored noise-free cubes: beam, distance (beam size in pixels), channel width (cubes are rebinned), per-line noise. MWISP noise from DR1 (0.25 K 13CO, 0.47 K 12CO); MWISP distance is a placeholder",
-    "molecule files": "co.dat is the LAMDA 12CO file; 13co_lamda.dat is the LAMDA 13C16O file"
+    "molecule files": "co.dat is the LAMDA 12CO file; 13co_lamda.dat is the LAMDA 13C16O file",
+    "min_channels": "\"auto\": max(2, round(0.2 km/s / channel width)) -> fcrao500 3, mwisp 2, nro_orion 2 (get_Observation_Data.min_channels_for)"
   }
 }

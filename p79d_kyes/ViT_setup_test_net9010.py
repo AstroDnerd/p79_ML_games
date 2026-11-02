@@ -43,8 +43,17 @@ p.add_argument("--mode", choices=["allmom", "mom0"], default="allmom")
 p.add_argument("--fold", default="0", help="fold index, or 'all' for the final model")
 p.add_argument("--calib_fold", type=int, default=0, help="calibration fold for --fold all")
 p.add_argument("--n_folds", type=int, default=5)
-p.add_argument("--chi_field", choices=["chi_v", "chi_w"], default=net.chi_field)
-p.add_argument("--chi_space", choices=["logit", "linear"], default=net.chi_space)
+p.add_argument("--chi_field", choices=["chi_v", "chi_w", "b", "b_lin"], default=net.chi_field,
+               help="second target; b / b_lin need --chi_space log")
+p.add_argument("--chi_space", choices=["logit", "linear", "log"], default=net.chi_space)
+p.add_argument("--chi_smooth_tc", type=float, default=None,
+               help="smooth chi_v/chi_w over this many crossing times of its run (see net.smoothed_chi)")
+p.add_argument("--chi_ms_min", type=float, default=0.0,
+               help="train, calibrate and score chi only on images with Ms >= this")
+p.add_argument("--dens_head", action="store_true",
+               help="add a third Gaussian head for ln b_lin and ln sigma_s")
+p.add_argument("--mask_aug_prob", type=float, default=0.0,
+               help="probability of the emission-mask augmentation per training image")
 p.add_argument("--epochs", type=int, default=net.epochs)
 p.add_argument("--eval_only", action="store_true", help="load weights instead of training")
 p.add_argument("--no_plots", action="store_true", help="skip the diagnostic plots on calib")
@@ -67,7 +76,11 @@ net.n_lines          = len(args.image_key.split("+"))
 net.n_model_channels = net.n_lines * net.n_input_channels + 1
 net.time_budget_h    = args.time_budget_h
 net.chi_field, net.chi_space = args.chi_field, args.chi_space
-net.CHI_LABEL = r"$\chi_v$" if args.chi_field == "chi_v" else r"$\chi_w$"
+net.CHI_LABEL = {"chi_v": r"$\chi_v$", "chi_w": r"$\chi_w$", "b": r"$b$", "b_lin": r"$b_{\rm lin}$"}[args.chi_field]
+if args.chi_field in ("b", "b_lin") and args.chi_space == "logit":
+    sys.exit("b / b_lin are not bounded by 1: use --chi_space log")
+net.mask_aug_prob = args.mask_aug_prob
+net.chi_smooth_tc, net.chi_ms_min, net.dens_head = args.chi_smooth_tc, args.chi_ms_min, args.dens_head
 net.epochs = args.epochs
 net.data_file, net.image_key, net.run_tag = args.data_file, args.image_key, args.tag
 fold = None if args.fold == "all" else int(args.fold)
@@ -141,11 +154,20 @@ q_chi  = {a: net.get_conformal_quantile(s_chi, a) for a in levels}
 print("\nConformal quantiles (calib fold):")
 print("  Ms : " + "  ".join(f"q{int(a*100)}={q:.3f}" for a, q in q_ms.items()))
 print("  chi: " + "  ".join(f"q{int(a*100)}={q:.3f}" for a, q in q_chi.items()))
+q_dens = {}
+if net.dens_head:
+    pc = net.predict(model, calib_loader)
+    for k in net.DENS_FIELDS:
+        sc = torch.tensor(np.abs(np.log(pc[f"{k}_true"] / pc[f"{k}_mean"])) / (pc[f"{k}_sig_log"] + 1e-8))
+        q_dens[k] = {str(a): net.get_conformal_quantile(sc, a) for a in levels}
+        print(f"  ln {k}: " + "  ".join(f"q{int(float(a)*100)}={q:.3f}" for a, q in q_dens[k].items()))
 print(f"  temperatures: T_ms={model.log_temp_ms.exp().item():.3f}  T_chi={model.log_temp_chi.exp().item():.3f}")
 with open(os.path.join(args.model_dir, f"conformal_quantiles_{net.idd}{tag_}_{net.input_mode}_fold{args.fold}.json"), "w") as f:
     json.dump({"fold": args.fold, "chi_field": net.chi_field, "chi_space": net.chi_space,
-               "data_file": net.data_file, "image_key": net.image_key, "n_lines": net.n_lines,
+               "data_file": net.data_file, "image_key": net.image_key, "n_lines": net.n_lines, "mask_aug_prob": net.mask_aug_prob,
                "native_beam_pix": native_beam_pix,
+               "chi_smooth_tc": net.chi_smooth_tc, "chi_ms_min": net.chi_ms_min, "dens_head": net.dens_head,
+               "dens_ln": q_dens,
                "ms_ln": {str(a): q for a, q in q_ms.items()},
                "chi_target": {str(a): q for a, q in q_chi.items()}}, f, indent=2)
 
@@ -186,8 +208,27 @@ for lo, hi in [(0, 0.5), (0.5, 1), (1, 3), (3, 7), (7, 20.01)]:
               f"{np.mean(np.abs(pt['chi_mean'][b] - pt['chi_true'][b])):9.3f}"
               f"{np.corrcoef(pt['chi_true'][b], pt['chi_mean'][b])[0, 1]:7.3f}")
 
+for k in net.DENS_FIELDS:
+    if f"ln_{k}" in m:
+        print(f"  ln {k:8s}: R²={m[f'ln_{k}']['R2']:.4f}  r={m[f'ln_{k}']['r']:.4f}  "
+              f"median |Δ|/{k}={np.median(np.abs(pt[f'{k}_mean'] / pt[f'{k}_true'] - 1)):.3f}")
+for key, mm in m.items():
+    if key.startswith("chi_target_space_Ms"):
+        print(f"  chi ({key[17:]}): R² in {net.chi_space} space {mm['R2']:.4f}")
+
+# skill per simulation (median prediction per run vs its mean truth) and whether
+# the network follows the time variation inside a run
+test = splits["test"]
+runm = {f"Ms>={c:g}": net.per_run_metrics(pt, test["sim_id"], c) for c in sorted({0.0, 1.0, net.chi_ms_min})}
+print(f"\n  Per-run skill ({runm['Ms>=0']['n_runs']} runs):")
+for cut, rm in runm.items():
+    print(f"   {cut:7s} " + "  ".join(f"{k} R²={v['R2']:.3f} (within-run r {v['within_run_r']:.2f})"
+                                     for k, v in rm.items() if isinstance(v, dict)))
+
 ci = net.build_conformal_intervals(model, test_loader, q_ms, q_chi)
-cov = {k: {lev: float(np.mean((ci[f"{k}_true"] >= ci[f"{k}_lo{lev}"]) & (ci[f"{k}_true"] <= ci[f"{k}_hi{lev}"])))
+chi_ok = ci["ms_true"] >= net.chi_ms_min
+cov = {k: {lev: float(np.mean(((ci[f"{k}_true"] >= ci[f"{k}_lo{lev}"]) & (ci[f"{k}_true"] <= ci[f"{k}_hi{lev}"]))
+                              [chi_ok if k == "chi" else slice(None)]))
            for lev in (80, 90, 95)} for k in ("ms", "chi")}
 print("\n  Conformal coverage on test (nominal 80/90/95): "
       f"Ms {cov['ms'][80]:.3f}/{cov['ms'][90]:.3f}/{cov['ms'][95]:.3f}   "
@@ -197,15 +238,15 @@ net.plot_predictions_dual(model, test_loader, tag="test")
 cov_mae = net.plot_coverage_calibration(model, calib_loader, test_loader, tag="test")
 net.plot_conformal_intervals_dual(ci, tag="test")
 
-test = splits["test"]
 np.savez(os.path.join(args.model_dir, f"{run_name}_test.npz"),
          fold=args.fold, sim_id=test["sim_id"], frame=test["frame"], los=test["los"],
          xi_forcing=test["xi_forcing"], Ms_mean=test["Ms_mean"], sim_names=splits["sim_names"],
-         n_H2=test["n_H2"], AV_median=test["AV_median"],
+         n_H2=test["n_H2"], AV_median=test["AV_median"], chi_raw=test["chi_raw"],
          **pt, **{k: v for k, v in ci.items() if k.rsplit("_", 1)[-1][:2] in ("lo", "hi")})
 with open(os.path.join(args.model_dir, f"{run_name}_test.json"), "w") as f:
     json.dump({"fold": args.fold, "chi_field": net.chi_field, "chi_space": net.chi_space,
-               "metrics": m, "coverage": cov, "coverage_mae_raw_conformal": cov_mae,
+               "chi_smooth_tc": net.chi_smooth_tc, "chi_ms_min": net.chi_ms_min, "dens_head": net.dens_head,
+               "metrics": m, "per_run": runm, "coverage": cov, "coverage_mae_raw_conformal": cov_mae,
                "n_test": int(len(pt["ms_true"]))}, f, indent=2)
 print(f"\nSaved test predictions + metrics → {args.model_dir}/{run_name}_test.{{npz,json}}")
 print("All evaluation complete.")

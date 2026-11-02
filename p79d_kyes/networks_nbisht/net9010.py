@@ -65,6 +65,21 @@ run_tag   = ""
 chi_field = "chi_v"
 chi_space = "logit"
 chi_eps   = 1e-3          # clip chi to [eps, 1 - eps] before the logit
+# chi_field may also be "b" or "b_lin" (density-variance parameters, > 0), trained
+# with chi_space = "log" (the names keep "chi" for the second target throughout).
+
+# Time-smoothed chi: a single-snapshot chi_v fluctuates within a run by ~0.5 in
+# logit on less than a crossing time, which the maps do not show. With
+# chi_smooth_tc = w the label is sum(Ec)/sum(Ec + Es) over the frames within
+# +-w/2 crossing times t_c = L / (Ms_mean c_s) of the image's frame (same run).
+# The raw per-frame value is kept as meta["chi_raw"].
+chi_smooth_tc = None
+# chi loss only for images with Ms >= chi_ms_min (subsonic maps carry almost no
+# compressive signal; the Ms head still trains on every image).
+chi_ms_min = 0.0
+# Density head: a third Gaussian head for (ln b_lin, ln sigma_s), b_lin = sigma_rho/Ms.
+dens_head = False
+DENS_FIELDS = ("b_lin", "sigma_s")
 
 # Input transform (see preprocess_maps). "physical": ln(Sigma/<Sigma>),
 # centroid minus its image mean, ln(sigma). "raw": the stored maps unchanged.
@@ -98,6 +113,17 @@ mc_dropout_p    = 0.10
 # ─── Resolution-aware training ────────────────────────────────────────────────
 res_train_prob = 0.50
 res_min_factor = 0.40
+
+# ─── Emission-mask augmentation ───────────────────────────────────────────────
+# Observed tiles are 30-100% detected (cloud edges, low-column regions); the mocks
+# are ~100% detected. With probability mask_aug_prob a training image gets a mask
+# that removes the faintest fraction q ~ U(mask_aug_qmin, mask_aug_qmax) of a
+# field mixing the image's own smoothed ln(W) with a random large-scale field
+# (cloud-edge-like, not tied to the box's own structure), and the masked pixels
+# are filled exactly like real tiles (fill_masked_moments).
+mask_aug_prob = 0.0
+mask_aug_qmin = 0.05
+mask_aug_qmax = 0.60
 
 # ─── MC uncertainty ───────────────────────────────────────────────────────────
 n_mc_samples = 30
@@ -135,12 +161,34 @@ def _read_dataset():
         sim_names   = f["sims/name"][:].astype(str)
         sim_xi      = f["sims/xi"][:]
         sim_ms_mean = f["sims/Ms_mean"][:]
+        meta["chi_raw"] = meta["chi_act"].copy()
+        if chi_smooth_tc and chi_field in ("chi_v", "chi_w"):
+            meta["chi_act"] = smoothed_chi(f, chi_field[-1], chi_smooth_tc, sim_ms_mean)[f["samples/frame_id"][:]]
+        for k in DENS_FIELDS:
+            meta[k] = f[f"labels/{k}"][:] if f"labels/{k}" in f else np.full(n_img, np.nan)
     keep = meta["Ms_act"] <= ms_max
     data = data[keep]
     meta = {k: v[keep] for k, v in meta.items()}
     meta["Ms_mean"] = sim_ms_mean[meta["sim_id"]]
     print(f"  {len(data)} images with Ms <= {ms_max}, chi target = {chi_field} ({chi_space})")
     return data, meta, {"name": sim_names, "xi": sim_xi, "Ms_mean": sim_ms_mean}
+
+
+def smoothed_chi(f, w_tag, width_tc, sim_ms_mean):
+    """Per-frame chi_<w_tag> averaged (as energies) over +-width_tc/2 crossing times of its run."""
+    Ec, Es = f[f"frames/Ec_{w_tag}"][:], f[f"frames/Es_{w_tag}"][:]
+    t, sid = f["frames/time"][:], f["frames/sim_id"][:]
+    out = np.empty(len(Ec))
+    for g in np.unique(sid):
+        q    = np.where(sid == g)[0]
+        q    = q[np.argsort(t[q])]
+        half = 0.5 * width_tc / sim_ms_mean[g]                   # time in L / c_s
+        ce, cs = (np.concatenate([[0.0], np.cumsum(a[q])]) for a in (Ec, Es))
+        lo = np.searchsorted(t[q], t[q] - half, "left")
+        hi = np.searchsorted(t[q], t[q] + half, "right")
+        out[q] = (ce[hi] - ce[lo]) / (ce[hi] - ce[lo] + cs[hi] - cs[lo])
+    print(f"  chi_{w_tag} smoothed over {width_tc} crossing times")
+    return out
 
 
 def fill_masked_moments(m0, m1, m2, mask, floor):
@@ -297,6 +345,8 @@ def chi_to_target(chi):
     if chi_space == "linear":
         return chi
     lib = torch if torch.is_tensor(chi) else np
+    if chi_space == "log":
+        return lib.log(lib.clip(chi, chi_eps, None))
     c = lib.clip(chi, chi_eps, 1 - chi_eps)
     return lib.log(c / (1 - c))
 
@@ -309,8 +359,49 @@ def chi_from_target(t, sig_t=None):
     if chi_space == "linear":
         return t if sig_t is None else (t, sig_t)
     lib = torch if torch.is_tensor(t) else np
+    if chi_space == "log":
+        v = lib.exp(t)
+        return v if sig_t is None else (v, v * sig_t)
     chi = 1 / (1 + lib.exp(-t))
     return chi if sig_t is None else (chi, chi * (1 - chi) * sig_t)
+
+
+def _random_field(H, W, slope=3.0):
+    """Unit-variance Gaussian random field with power spectrum k^-slope (torch RNG, worker-safe)."""
+    ky = torch.fft.fftfreq(H).reshape(-1, 1); kx = torch.fft.rfftfreq(W).reshape(1, -1)
+    k = torch.sqrt(kx ** 2 + ky ** 2); k[0, 0] = 1.0
+    amp = k ** (-slope / 2); amp[0, 0] = 0.0
+    noise = torch.randn(H, W // 2 + 1) + 1j * torch.randn(H, W // 2 + 1)
+    f = torch.fft.irfft2(noise * amp, s=(H, W))
+    return (f - f.mean()) / f.std()
+
+
+def mask_augment(x):
+    """
+    x: [n_lines * n_input_channels, H, W] physical maps. Returns x with a random
+    emission mask applied and filled as for real tiles. Lines share the mask
+    field; later lines (12CO) get a smaller masked fraction than the first.
+    """
+    from scipy.ndimage import gaussian_filter
+    H, W = x.shape[-2:]
+    q    = mask_aug_qmin + (mask_aug_qmax - mask_aug_qmin) * torch.rand(1).item()
+    beta = torch.rand(1).item()                      # weight of the random large-scale field
+    grf  = _random_field(H, W).numpy()
+    out  = x.clone()
+    for l, blk in enumerate(x.split(n_input_channels, dim=0)):
+        b  = blk.numpy().astype(np.float64)
+        lw = gaussian_filter(np.log(np.clip(b[0], 1e-6, None)), 2.0, mode="wrap")
+        z  = (lw - lw.mean()) / (lw.std() + 1e-12) + beta * grf
+        ql = q if l == 0 else 0.3 * q
+        keep = z > np.quantile(z, ql)
+        floor = np.percentile(b[0][keep], 1)
+        if n_input_channels == 3:
+            a0, a1, a2 = fill_masked_moments(b[0], b[1], b[2], keep, floor)
+            filled = np.stack([a0, a1, a2])
+        else:
+            filled = np.where(keep, np.maximum(b[0], floor), floor)[None]
+        out[l * n_input_channels:(l + 1) * n_input_channels] = torch.from_numpy(filled.astype(np.float32))
+    return out
 
 
 def input_channel_index():
@@ -355,6 +446,7 @@ class MachChiDataset(Dataset):
     Returns:
         x       : [n_model_channels, 128, 128]  — input channels + res indicator
         targets : [2]                            — [ln(Ms), chi_to_target(chi)]
+                  [4] with dens_head             — + [ln b_lin, ln sigma_s]
 
     n_input_channels controls whether x uses mom0 only (1) or all moments (3).
     Augmentation and resolution degradation act on the physical maps; the
@@ -365,6 +457,8 @@ class MachChiDataset(Dataset):
         self.data    = split_dict["data"]     # [N, 3, 128, 128]
         self.ms_act  = split_dict["Ms_act"]
         self.chi_t   = chi_to_target(np.asarray(split_dict["chi_act"], dtype=np.float64))
+        self.dens_t  = np.log(np.stack([np.asarray(split_dict[k], dtype=np.float64) for k in DENS_FIELDS], 1)
+                              .clip(1e-6)) if dens_head else None
         self.augment = augment
 
     def __len__(self):
@@ -373,6 +467,9 @@ class MachChiDataset(Dataset):
     def __getitem__(self, idx):
         x = self.data[idx][input_channel_index()].clone()   # [n_lines * C, H, W]
         res_factor = 1.0
+
+        if self.augment and mask_aug_prob > 0 and torch.rand(1).item() < mask_aug_prob:
+            x = mask_augment(x)                         # before roll/flip/degrade, as for a real map
 
         if self.augment:
             H, W = x.shape[-2], x.shape[-1]
@@ -391,7 +488,10 @@ class MachChiDataset(Dataset):
         x = torch.cat([x, res_ch], dim=0)   # [n_model_channels, H, W]
 
         ms  = float(self.ms_act[idx])
-        tgt = torch.tensor([np.log(ms + 1e-6), float(self.chi_t[idx])], dtype=torch.float32)
+        tgt = [np.log(ms + 1e-6), float(self.chi_t[idx])]
+        if self.dens_t is not None:
+            tgt += list(self.dens_t[idx])                       # [ln b_lin, ln sigma_s]
+        tgt = torch.tensor(tgt, dtype=torch.float32)
 
         return x.to(device), tgt.to(device)
 
@@ -512,6 +612,9 @@ class HybridCNNViT(nn.Module):
         # Temperature scalars for calibration
         self.log_temp_ms  = nn.Parameter(torch.zeros(1))
         self.log_temp_chi = nn.Parameter(torch.zeros(1))
+        if dens_head:     # [mean, logvar] for each of ln b_lin, ln sigma_s
+            self.head_dens     = nn.Linear(embed_dim, 2 * len(DENS_FIELDS))
+            self.log_temp_dens = nn.Parameter(torch.zeros(1))
 
         self.register_buffer("train_curve", torch.zeros(epochs))
         self.register_buffer("val_curve",   torch.zeros(epochs))
@@ -557,7 +660,13 @@ class HybridCNNViT(nn.Module):
         mean_chi = out_chi[:, 0:1]
         lv_chi   = (out_chi[:, 1:2] + 2.0 * self.log_temp_chi).clamp(-10, 5)
 
-        return (mean_ms, lv_ms), (mean_chi, lv_chi)
+        if not dens_head:
+            return (mean_ms, lv_ms), (mean_chi, lv_chi)
+        out_d   = self.head_dens(feat)
+        nd      = len(DENS_FIELDS)
+        mean_d  = out_d[:, :nd]
+        lv_d    = (out_d[:, nd:] + 2.0 * self.log_temp_dens).clamp(-10, 5)
+        return (mean_ms, lv_ms), (mean_chi, lv_chi), (mean_d, lv_d)
 
     def mc_forward(self, x, n_samples: int = n_mc_samples):
         """
@@ -582,11 +691,11 @@ class HybridCNNViT(nn.Module):
             alea = var.mean(0).sqrt()
             return mean, alea, epis, torch.sqrt(alea**2 + epis**2)
 
-        return _stats(0), _stats(1)
+        return tuple(_stats(k) for k in range(len(runs[0])))
 
     def criterion(self, pred, target):
         """Gaussian NLL for ln(Ms) (plus weighted MSE) and for the chi target."""
-        (mean_ms, lv_ms), (mean_chi, lv_chi) = pred
+        (mean_ms, lv_ms), (mean_chi, lv_chi) = pred[:2]
         tgt_ms  = target[:, 0:1]
         tgt_chi = target[:, 1:2]
 
@@ -597,7 +706,17 @@ class HybridCNNViT(nn.Module):
         loss_ms = 0.9 * nll_ms.mean() + 0.1 * aux_ms
 
         nll_chi = 0.5 * (lv_chi + (tgt_chi - mean_chi)**2 * torch.exp(-lv_chi))
-        return loss_ms + nll_chi.mean()
+        if chi_ms_min > 0:
+            use = (tgt_ms >= np.log(chi_ms_min)).float()
+            loss_chi = (nll_chi * use).sum() / use.sum().clamp_min(1.0)
+        else:
+            loss_chi = nll_chi.mean()
+        loss = loss_ms + loss_chi
+        if dens_head:
+            mean_d, lv_d = pred[2]
+            tgt_d = target[:, 2:2 + len(DENS_FIELDS)]
+            loss  = loss + (0.5 * (lv_d + (tgt_d - mean_d)**2 * torch.exp(-lv_d))).mean()
+        return loss
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -720,7 +839,12 @@ def predict(model, loader):
     out = {k: [] for k in ("t_ms_mu", "t_ms_sig", "t_ms_y", "t_chi_mu", "t_chi_sig", "t_chi_y")}
     with torch.no_grad():
         for xb, yb in loader:
-            (mu_ms, lv_ms), (mu_c, lv_c) = model(xb)
+            res = model(xb)
+            (mu_ms, lv_ms), (mu_c, lv_c) = res[:2]
+            if dens_head:
+                out.setdefault("t_dens_mu", []).append(res[2][0].cpu())
+                out.setdefault("t_dens_sig", []).append(torch.exp(0.5 * res[2][1]).cpu())
+                out.setdefault("t_dens_y", []).append(yb[:, 2:2 + len(DENS_FIELDS)].cpu())
             out["t_ms_mu"].append(mu_ms.view(-1).cpu());  out["t_ms_sig"].append(torch.exp(0.5 * lv_ms).view(-1).cpu())
             out["t_chi_mu"].append(mu_c.view(-1).cpu());  out["t_chi_sig"].append(torch.exp(0.5 * lv_c).view(-1).cpu())
             out["t_ms_y"].append(yb[:, 0].cpu());         out["t_chi_y"].append(yb[:, 1].cpu())
@@ -728,6 +852,13 @@ def predict(model, loader):
     out["ms_true"], out["ms_mean"], out["ms_sig_log"] = np.exp(out["t_ms_y"]), np.exp(out["t_ms_mu"]), out["t_ms_sig"]
     out["chi_true"] = chi_from_target(out["t_chi_y"])
     out["chi_mean"], out["chi_sig"] = chi_from_target(out["t_chi_mu"], out["t_chi_sig"])
+    if dens_head:   # ln-space Gaussians -> physical medians; sigma stays in ln units
+        for j, k in enumerate(DENS_FIELDS):
+            out[f"{k}_true"] = np.exp(out["t_dens_y"][:, j])
+            out[f"{k}_mean"] = np.exp(out["t_dens_mu"][:, j])
+            out[f"{k}_sig_log"] = out["t_dens_sig"][:, j]
+        for k in ("t_dens_mu", "t_dens_sig", "t_dens_y"):
+            del out[k]
     return out
 
 
@@ -736,6 +867,7 @@ def compute_conformal_scores(model, cal_loader):
     p = predict(model, cal_loader)
     s_ms  = np.abs(p["t_ms_y"]  - p["t_ms_mu"])  / (p["t_ms_sig"]  + 1e-8)
     s_chi = np.abs(p["t_chi_y"] - p["t_chi_mu"]) / (p["t_chi_sig"] + 1e-8)
+    s_chi = s_chi[p["ms_true"] >= chi_ms_min]          # chi is only claimed where it was trained
     return torch.tensor(s_ms), torch.tensor(s_chi)
 
 
@@ -792,9 +924,41 @@ def regression_metrics(p):
     m_msl  = _metrics(p["ms_true"], p["ms_mean"])
     m_chi  = _metrics(p["chi_true"], p["chi_mean"])
     m_chit = _metrics(p["t_chi_y"], p["t_chi_mu"])
-    return {"lnMs": m_ms, "Ms": m_msl,
-            "Ms_median_frac_err": float(np.median(np.abs(p["ms_mean"] - p["ms_true"]) / p["ms_true"])),
-            "chi": m_chi, "chi_target_space": m_chit}
+    out = {"lnMs": m_ms, "Ms": m_msl,
+           "Ms_median_frac_err": float(np.median(np.abs(p["ms_mean"] - p["ms_true"]) / p["ms_true"])),
+           "chi": m_chi, "chi_target_space": m_chit}
+    if chi_ms_min > 0:
+        u = p["ms_true"] >= chi_ms_min
+        out[f"chi_target_space_Ms>={chi_ms_min:g}"] = _metrics(p["t_chi_y"][u], p["t_chi_mu"][u])
+    for k in DENS_FIELDS:
+        if f"{k}_true" in p:
+            out[f"ln_{k}"] = _metrics(np.log(p[f"{k}_true"]), np.log(p[f"{k}_mean"]))
+    return out
+
+
+def per_run_metrics(p, sim_id, ms_min=0.0):
+    """
+    Skill per simulation rather than per image: within each run, the median of
+    the predictions against the mean of the truth (both in network space for
+    chi, ln for Ms and the density targets), over the images with Ms >= ms_min.
+    Also the within-run correlation of prediction and truth (does the network
+    follow a run's time variation, or only identify the run?).
+    """
+    u = p["ms_true"] >= ms_min
+    runs = np.unique(sim_id[u])
+    series = {"lnMs": (np.log(p["ms_true"]), np.log(p["ms_mean"])),
+              "chi_target_space": (p["t_chi_y"], p["t_chi_mu"])}
+    for k in DENS_FIELDS:
+        if f"{k}_true" in p:
+            series[f"ln_{k}"] = (np.log(p[f"{k}_true"]), np.log(p[f"{k}_mean"]))
+    out = {"n_runs": int(len(runs)), "ms_min": ms_min}
+    for name, (y, mu) in series.items():
+        yr = np.array([y[u & (sim_id == g)].mean() for g in runs])
+        pr = np.array([np.median(mu[u & (sim_id == g)]) for g in runs])
+        dy = np.concatenate([y[u & (sim_id == g)] - y[u & (sim_id == g)].mean() for g in runs])
+        dp = np.concatenate([mu[u & (sim_id == g)] - mu[u & (sim_id == g)].mean() for g in runs])
+        out[name] = {**_metrics(yr, pr), "within_run_r": float(np.corrcoef(dy, dp)[0, 1]) if dy.std() > 0 else np.nan}
+    return out
 
 
 def plot_loss_curve(model):
@@ -917,7 +1081,7 @@ def plot_uncertainty_analysis_dual(model, test_loader, tag="test"):
     rows = {k: [] for k in ("ms_mu", "ms_al", "ms_ep", "ms_tot", "ms_y",
                             "c_mu", "c_al", "c_ep", "c_tot", "c_y")}
     for xb, yb in test_loader:
-        ms_r, c_r = model.mc_forward(xb, n_samples=n_mc_samples)
+        ms_r, c_r = model.mc_forward(xb, n_samples=n_mc_samples)[:2]
         for k, v in zip(("ms_mu", "ms_al", "ms_ep", "ms_tot"), ms_r):
             rows[k].append(v.view(-1).cpu())
         for k, v in zip(("c_mu", "c_al", "c_ep", "c_tot"), c_r):
@@ -989,7 +1153,7 @@ def plot_resolution_robustness_dual(model, sample_x, true_ms, true_chi, tag=""):
                 x = _degrade_resolution(x, f)
             x = preprocess_lines(x)
             res_ch = torch.full((1, 1, x.shape[-2], x.shape[-1]), f, dtype=x.dtype, device=x.device)
-            (mu_ms, lv_ms), (mu_c, lv_c) = model(torch.cat([x, res_ch], dim=1).to(device))
+            (mu_ms, lv_ms), (mu_c, lv_c) = model(torch.cat([x, res_ch], dim=1).to(device))[:2]
             ms_val = float(np.exp(mu_ms.item()))
             ms_p.append(ms_val); ms_s.append(ms_val * float(torch.exp(0.5 * lv_ms).item()))
             cm, cs = chi_from_target(mu_c.item(), float(torch.exp(0.5 * lv_c).item()))

@@ -64,8 +64,11 @@ p.add_argument("--models", nargs="*", default=None, help="e.g. fold0 foldall (de
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
 p.add_argument("--tag", default="mom0", help="run tag of the mom0 models")
 p.add_argument("--beam_pix", type=float, default=2.0, help="beam FWHM in pixels after regridding")
+p.add_argument("--output_dir", default=None, help="overrides the config's output_dir")
 args = p.parse_args()
 cfg = json.load(open(args.config))
+if args.output_dir:
+    cfg["output_dir"] = args.output_dir
 co_cfg = json.load(open(args.co_config))
 os.makedirs(cfg["output_dir"], exist_ok=True)
 T_SIZE = cfg["tile_size"]

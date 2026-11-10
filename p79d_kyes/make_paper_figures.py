@@ -39,13 +39,13 @@ MS_BINS   = [(0, 0.5), (0.5, 1), (1, 3), (3, 7), (7, 20.01)]
 
 # model tag -> (label, folds) for the comparison figures
 MODELS_ORDER = [
-    ("",         "projected maps"),
-    ("13co",     r"$^{13}$CO run 1, 0.1 K (v1)"),
-    ("13cov2",   r"$^{13}$CO run 1, 0.2 K + masking (v2)"),
-    ("co2_13",   r"run 2, $^{13}$CO"),
-    ("co2_12",   r"run 2, $^{12}$CO"),
-    ("co2_both", r"run 2, $^{13}$CO + $^{12}$CO"),
+    ("final_proj",   "projected maps"),
+    ("final_13co",   r"$^{13}$CO run 1 (FCRAO-like)"),
+    ("final_co13",   r"run 2, $^{13}$CO"),
+    ("final_co12",   r"run 2, $^{12}$CO"),
+    ("final_coboth", r"run 2, $^{13}$CO + $^{12}$CO"),
 ]
+RUN2 = ("final_co13", "final_co12", "final_coboth")
 
 
 def save(fig, name, png=False):
@@ -56,10 +56,10 @@ def save(fig, name, png=False):
     print("wrote", path)
 
 
-def pooled(tag):
+def pooled(tag, mode="allmom"):
     """Concatenate the out-of-fold test predictions of every fold of one model."""
     t = f"_{tag}" if tag else ""
-    files = sorted(glob.glob(f"{MODELS}/net9010{t}_allmom_fold[0-9]_test.npz"))
+    files = sorted(glob.glob(f"{MODELS}/net9010{t}_{mode}_fold[0-9]_test.npz"))
     if not files:
         return None
     out = {}
@@ -159,8 +159,8 @@ def fig_architecture():
 
 
 def fig_ms_scatter():
-    sets = [("", "projected maps"), ("13cov2", r"synthetic $^{13}$CO (run 1)"),
-            ("co2_both", r"run 2: $^{13}$CO + $^{12}$CO")]
+    sets = [("final_proj", "projected maps"), ("final_13co", r"synthetic $^{13}$CO (run 1)"),
+            ("final_coboth", r"run 2: $^{13}$CO + $^{12}$CO")]
     sets = [(t, l, pooled(t)) for t, l in sets]
     sets = [s for s in sets if s[2] is not None]
     fig, axes = plt.subplots(2, len(sets), figsize=(COL2, 3.9), sharex=True,
@@ -199,7 +199,7 @@ def fig_ms_scatter():
 # ─── 5. chi: predicted vs true ───────────────────────────────────────────────
 
 def fig_chi_scatter():
-    d = pooled("")
+    d = pooled("final_proj")
     fig, axes = plt.subplots(1, 2, figsize=(COL2, 3.0), gridspec_kw={"wspace": 0.3})
     ax = axes[0]
     sc = ax.scatter(d["chi_true"], d["chi_mean"], c=np.log10(d["ms_true"]), s=0.6, cmap="plasma",
@@ -242,25 +242,31 @@ def fig_xi_confusion():
 # ─── 7. b Ms degeneracy: residual correlation by Ms bin ──────────────────────
 
 def fig_degeneracy():
-    d = pooled("")
-    dl, dc = np.log(d["ms_mean"] / d["ms_true"]), d["chi_mean"] - d["chi_true"]
-    fig, axes = plt.subplots(1, 5, figsize=(COL2, 1.75), sharey=True, gridspec_kw={"wspace": 0.06})
-    for ax, (lo, hi) in zip(axes, MS_BINS):
-        m = (d["ms_true"] >= lo) & (d["ms_true"] < hi)
-        ax.hexbin(dc[m], dl[m], gridsize=35, extent=(-0.8, 0.8, -1.2, 1.2), cmap="Greys", bins="log", mincnt=1,
-                  linewidths=0, rasterized=True)
-        ax.axhline(0, color="k", lw=0.3); ax.axvline(0, color="k", lw=0.3)
-        ax.set_title(fr"${lo:g}\leq\mathcal{{M}}_s<{min(hi, 20):g}$", fontsize=6.5)
-        ax.text(0.05, 0.05, f"$r={np.corrcoef(dl[m], dc[m])[0,1]:+.2f}$", transform=ax.transAxes, fontsize=6.5)
-        ax.set_xlim(-0.8, 0.8); ax.set_ylim(-1.2, 1.2); ax.set_xlabel(r"$\Delta\chi_v$")
-    axes[0].set_ylabel(r"$\Delta\ln\mathcal{M}_s$")
+    rows = [(pooled("final_proj"), "full moments"), (pooled("final_mom0", "mom0"), "column density only")]
+    fig, axes = plt.subplots(2, 5, figsize=(COL2, 3.3), sharex=True, sharey=True,
+                             gridspec_kw={"wspace": 0.06, "hspace": 0.08})
+    for r, (d, label) in enumerate(rows):
+        dl, dc = np.log(d["ms_mean"] / d["ms_true"]), d["chi_mean"] - d["chi_true"]
+        for ax, (lo, hi) in zip(axes[r], MS_BINS):
+            m = (d["ms_true"] >= lo) & (d["ms_true"] < hi)
+            ax.hexbin(dc[m], dl[m], gridsize=35, extent=(-0.8, 0.8, -1.2, 1.2), cmap="Greys", bins="log", mincnt=1,
+                      linewidths=0, rasterized=True)
+            ax.axhline(0, color="k", lw=0.3); ax.axvline(0, color="k", lw=0.3)
+            if r == 0:
+                ax.set_title(fr"${lo:g}\leq\mathcal{{M}}_s<{min(hi, 20):g}$", fontsize=6.5)
+            ax.text(0.05, 0.05, f"$r={np.corrcoef(dl[m], dc[m])[0,1]:+.2f}$", transform=ax.transAxes, fontsize=6.5)
+            ax.set_xlim(-0.8, 0.8); ax.set_ylim(-1.2, 1.2)
+            if r == 1:
+                ax.set_xlabel(r"$\Delta\chi_v$")
+        axes[r, 0].set_ylabel(r"$\Delta\ln\mathcal{M}_s$")
+        axes[r, -1].text(1.04, 0.5, label, transform=axes[r, -1].transAxes, rotation=270, va="center", fontsize=6.5)
     save(fig, "degeneracy")
 
 
 # ─── 8. Coverage: raw Gaussian vs conformal, per fold ────────────────────────
 
 def fig_coverage():
-    t = ""
+    t = "_final_proj"
     files = sorted(glob.glob(f"{MODELS}/net9010{t}_allmom_fold[0-9]_test.npz"))
     levels = np.linspace(0.5, 0.95, 10)
     fig, axes = plt.subplots(1, 2, figsize=(COL1 * 1.35, 2.0), sharey=True, gridspec_kw={"wspace": 0.08})
@@ -347,8 +353,8 @@ def fig_model_comparison():
 def fig_av():
     fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.3), gridspec_kw={"wspace": 0.25})
     edges = np.array([0.8, 1.5, 2.5, 4, 6, 10, 16, 30])
-    cols = {"co2_13": "#1b9e77", "co2_12": "#d95f02", "co2_both": "#7570b3"}
-    for tag, label in MODELS_ORDER[3:]:
+    cols = {"final_co13": "#1b9e77", "final_co12": "#d95f02", "final_coboth": "#7570b3"}
+    for tag, label in [m for m in MODELS_ORDER if m[0] in RUN2]:
         d = pooled(tag)
         if d is None:
             continue
@@ -373,14 +379,14 @@ def fig_av():
 def fig_obs_maps():
     os.makedirs(OUT, exist_ok=True)
     for cloud in ("perseus", "orion"):
-        src = f"{PLOTS}/observations_net9010/{cloud}_net9010.png"
+        src = f"{PLOTS}/observations_net9010_final_proj/{cloud}_net9010.png"
         shutil.copy(src, f"{OUT}/fig_obs_{cloud}.png"); print("copied", src)
 
 
 # ─── 13. Observed clouds: predictions vs matched-scale Ms ────────────────────
 
 def fig_obs_compare():
-    runs = [("projmask", "projected + mask aug."), ("13cov2", r"$^{13}$CO run 1 (v2)"), ("co2_13", r"run 2 $^{13}$CO")]
+    runs = [("final_proj", "projected + mask aug."), ("final_13co", r"$^{13}$CO run 1 (v2)"), ("final_co13", r"run 2 $^{13}$CO")]
     marks = {"perseus": "o", "ophiuchus": "s", "orion": "D", "serpens": "^"}
     fig, axes = plt.subplots(1, len(runs), figsize=(COL2, 2.5), sharey=True, gridspec_kw={"wspace": 0.06})
     for ax, (tag, label) in zip(axes, runs):
@@ -420,7 +426,7 @@ def fig_linewidth_scale():
     arce = [(0.6, 7.4), (2.0, 7.6), (0.7, 6.5), (0.9, 7.2), (1.4, 5.4), (0.9, 5.8)]
     ax.plot(*zip(*[(2 * r, m) for r, m in arce]), "s", color="#d95f02", ms=3.5, label="regions (Arce+2010, $L=2R$)")
     import pandas as pd
-    t = pd.read_csv(f"{PLOTS}/observations_net9010/perseus_net9010_tiles.csv")
+    t = pd.read_csv(f"{PLOTS}/observations_net9010_final_proj/perseus_net9010_tiles.csv")
     ax.plot(np.full(len(t), 4.3), t["Ms_tile_spectrum"], "D", color="#7570b3", ms=3.5, label="128-pixel tiles (this work)")
     ax.plot(30, 14, "^", color="#e7298a", ms=4.5, label="complex (Padoan+2003)")
     ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlabel("scale $L$ [pc]"); ax.set_ylabel(r"$\mathcal{M}_s$ from linewidth")
@@ -445,7 +451,7 @@ def mwisp_tiles(tag):
 
 
 def fig_mwisp():
-    runs = [("co2_13", r"run 2, $^{13}$CO"), ("co2_both", r"run 2, $^{13}$CO + $^{12}$CO")]
+    runs = [("final_co13", r"run 2, $^{13}$CO"), ("final_coboth", r"run 2, $^{13}$CO + $^{12}$CO")]
     fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.7), sharey=True, gridspec_kw={"wspace": 0.06})
     from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
     for ax, (tag, label) in zip(axes, runs):
@@ -472,7 +478,7 @@ def fig_mwisp():
 
 def fig_dust():
     import pandas as pd
-    t = pd.read_csv(f"{PLOTS}/observations_net9010_dust/dust_matched_tiles.csv")
+    t = pd.read_csv(f"{PLOTS}/observations_net9010_dust_final/dust_matched_tiles.csv")
     marks = {"perseus": ("o", "Perseus"), "ophiuchus": ("s", "Ophiuchus"), "orion": ("D", "Orion A")}
     fig, ax = plt.subplots(figsize=(COL1, 2.6))
     for cloud, (mk, name) in marks.items():

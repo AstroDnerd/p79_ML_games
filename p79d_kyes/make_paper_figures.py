@@ -404,7 +404,7 @@ def fig_obs_compare():
             ax.scatter([], [], marker=mk, color="0.6", edgecolor="k", lw=0.3, label=cloud.capitalize())
         x = np.array([3, 30])
         ax.plot(x, x, "k-", lw=0.6); ax.fill_between(x, x / 1.2, x * 1.2, color="0.9", lw=0, zorder=0)
-        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(4, 25); ax.set_ylim(4, 25)
+        ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(3.5, 25); ax.set_ylim(3.5, 25)
         ax.set_title(label); ax.set_xlabel(r"$\mathcal{M}_s^{\rm obs}=\sqrt{3}\,\sigma_{\rm tile}/c_s$")
         from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
         for axis in (ax.xaxis, ax.yaxis):
@@ -492,9 +492,9 @@ def fig_dust():
         ax.plot(np.c_[s["Ms_CO_tile_spectrum"], s["Ms_CO_tile_spectrum"]].T,
                 np.c_[s["Ms_kfold_mean"], s["Ms_CO_projmask_kfold"]].T, color="0.7", lw=0.5, zorder=1)
     x = np.array([1, 40])
-    ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 0.5 * x, "k:", lw=0.6)
-    ax.text(18, 8.0, r"$\times0.5$", fontsize=6)
-    ax.set_xlim(4, 22); ax.set_ylim(1.5, 22)
+    ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 0.3 * x, "k:", lw=0.6)
+    ax.text(18, 4.6, r"$\times0.3$", fontsize=6)
+    ax.set_xlim(4, 22); ax.set_ylim(1.2, 22)
     ax.set_xlabel(r"$\mathcal{M}_s^{\rm obs}$ from the $^{13}$CO tile spectrum")
     ax.set_ylabel(r"predicted $\mathcal{M}_s$ (5-fold mean)")
     ax.legend(frameon=False, fontsize=5, loc="upper left", ncol=2)

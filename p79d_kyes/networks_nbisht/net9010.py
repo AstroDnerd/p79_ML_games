@@ -96,6 +96,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 epochs       = 100
 time_budget_h = None    # stop training (keeping the best weights) before this many hours
 lr           = 5e-4
+seed         = 8675309  # training seed (initialisation, data order, augmentation); --seed in the setup script
 batch_size   = 512
 weight_decay = 0.01
 
@@ -747,7 +748,7 @@ def set_seed(seed=8675309):
 
 def trainer(model, splits, epochs=100, batch_size=64, lr=5e-4,
             weight_decay=0.01, patience=15, num_workers=8):
-    set_seed()
+    set_seed(seed)
 
     ds_train = MachChiDataset(splits["train"], augment=True)
     ds_val   = MachChiDataset(splits["valid"], augment=False)

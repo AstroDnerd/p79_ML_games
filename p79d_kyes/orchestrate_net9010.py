@@ -186,7 +186,39 @@ def plan_final():
             "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
 
 
-PLANS = {"run2": plan_run2, "tests1": plan_tests1, "tests2": plan_tests2, "smooth": plan_smooth, "final": plan_final}
+def plan_full():
+    """Models for the observations, trained on all 42 runs (--fold full; conformal quantiles from the pooled
+    out-of-fold residuals of the final k-fold runs), for every input type; then a second-seed 5-fold run of
+    the projected full-moment model, to measure how much the k-fold numbers move between trainings."""
+    proj, r1, r2 = (f"{DATA}/p79d_mach_grid_256_v1.h5", f"{DATA}/p79d_mach_grid_256_13co_v1_fcrao500_v2.h5",
+                    f"{DATA}/p79d_mach_grid_256_co_v2_fcrao500.h5")
+    variants = [  # (tag, mode, data, image_key, extra, memory GB)
+        ("final_proj",   "allmom", proj, "images", "--mask_aug_prob 0.5", 64),
+        ("final_co13",   "allmom", r2,   "images_obs_13co", "", 64),
+        ("final_coboth", "allmom", r2,   "images_obs_13co+images_obs_12co", "", 72),
+        ("final_mom0",   "mom0",   proj, "images", "", 60),
+        ("final_co12",   "allmom", r2,   "images_obs_12co", "", 64),
+        ("final_13co",   "allmom", r1,   "images_obs", "", 64),
+    ]
+    jobs = []
+    for tag, mode, data, key, extra, mem in variants:
+        jobs.append({"name": f"{tag}_ffull", "group": tag, "fold": "full", "mode": mode,
+                     "args": f"--mode {mode} --fold full --data_file {data} --image_key {key} {extra} "
+                             f"--dens_head --no_plots --tag {tag}".replace("  ", " "),
+                     "outputs": [f"{MODEL_DIR}/conformal_quantiles_9010_{tag}_{mode}_foldfull.json"],
+                     "mem_gb": mem, "time_h": 14.0, "time_h0": 14.0, "state": "queued", "attempts": []})
+    for fold in "01234":
+        jobs.append({"name": f"final_proj_s2_f{fold}", "group": "final_proj_s2", "fold": fold, "mode": "allmom",
+                     "args": f"--mode allmom --fold {fold} --data_file {proj} --image_key images --mask_aug_prob 0.5 "
+                             f"--dens_head --no_plots --seed 2 --tag final_proj_s2",
+                     "outputs": [f"{MODEL_DIR}/net9010_final_proj_s2_allmom_fold{fold}_test.json"],
+                     "mem_gb": 56, "time_h": 12.0, "time_h0": 12.0, "state": "queued", "attempts": []})
+    return {"name": "full", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
+PLANS = {"run2": plan_run2, "tests1": plan_tests1, "tests2": plan_tests2, "smooth": plan_smooth, "final": plan_final,
+         "full": plan_full}
 
 
 # ─── STATE ───────────────────────────────────────────────────────────────────
@@ -305,7 +337,7 @@ def pool_finished_groups(state):
     for g in sorted({j["group"] for j in state["jobs"]}):
         if g in state["groups_pooled"]:
             continue
-        folds = [j for j in state["jobs"] if j["group"] == g and j["fold"] != "all"]
+        folds = [j for j in state["jobs"] if j["group"] == g and j["fold"] not in ("all", "full")]
         if folds and all(j["state"] == "done" for j in folds):
             mode = folds[0].get("mode", "allmom")
             out = f"{MODEL_DIR}/kfold_summary_{g}_{mode}.txt"

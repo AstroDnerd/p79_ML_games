@@ -8,9 +8,15 @@ simulation-held-out fold.
   python ViT_setup_test_net9010.py --mode mom0 --fold 0 --eval_only
   python ViT_setup_test_net9010.py --mode allmom --fold all      # final model
 
---fold all trains the model to apply to observations: every simulation except
-the calibration fold (fold 0 by default, --calib_fold) is used for training, and
-there is no test set. Report performance from the k-fold runs, not from it.
+--fold full trains the model to apply to observations on EVERY simulation (no
+test set, no calibration fold). Its conformal quantiles come from the pooled
+out-of-fold residuals of the k-fold runs of the same tag and mode
+(cross-conformal), so those must exist first. They are slightly conservative,
+because the fold models saw fewer simulations. Report performance from the
+k-fold runs.
+
+--fold all is the older variant: every simulation except the calibration fold
+(fold 0 by default, --calib_fold) is used for training.
 
 Splits (net.load_data_grouped): test = one fold of simulations, calib = the
 next fold (conformal calibration and diagnostic plots), valid = held-back
@@ -40,7 +46,9 @@ import networks_nbisht.net9010 as net
 
 p = argparse.ArgumentParser()
 p.add_argument("--mode", choices=["allmom", "mom0"], default="allmom")
-p.add_argument("--fold", default="0", help="fold index, or 'all' for the final model")
+p.add_argument("--fold", default="0", help="fold index; 'full' = train on every simulation, calibrate on the "
+                                           "pooled out-of-fold k-fold residuals; 'all' = all but the calibration fold")
+p.add_argument("--seed", type=int, default=net.seed, help="training seed (use --tag to keep the outputs apart)")
 p.add_argument("--calib_fold", type=int, default=0, help="calibration fold for --fold all")
 p.add_argument("--n_folds", type=int, default=5)
 p.add_argument("--chi_field", choices=["chi_v", "chi_w", "b", "b_lin"], default=net.chi_field,
@@ -82,8 +90,10 @@ if args.chi_field in ("b", "b_lin") and args.chi_space == "logit":
 net.mask_aug_prob = args.mask_aug_prob
 net.chi_smooth_tc, net.chi_ms_min, net.dens_head = args.chi_smooth_tc, args.chi_ms_min, args.dens_head
 net.epochs = args.epochs
+net.seed = args.seed
 net.data_file, net.image_key, net.run_tag = args.data_file, args.image_key, args.tag
-fold = None if args.fold == "all" else int(args.fold)
+full = args.fold == "full"
+fold = None if args.fold in ("all", "full") else int(args.fold)
 
 tag_      = f"_{args.tag}" if args.tag else ""
 net_name  = f"net{net.idd}{tag_}_{net.input_mode}"
@@ -106,8 +116,8 @@ print(f"{net_name} | fold {args.fold}/{args.n_folds} | target {net.chi_field} ({
       f"device {net.device} | threads {torch.get_num_threads()}", flush=True)
 
 # ─── DATA ─────────────────────────────────────────────────────────────────────
-splits = net.load_data_grouped(fold, args.n_folds, calib=True, calib_fold=args.calib_fold)
-tags   = ("train", "valid", "calib", "test") if fold is not None else ("train", "valid", "calib")
+splits = net.load_data_grouped(fold, args.n_folds, calib=not full, calib_fold=args.calib_fold)
+tags   = ("train", "valid", "calib", "test") if fold is not None else (("train", "valid") if full else ("train", "valid", "calib"))
 for tag in tags:
     s = splits[tag]
     print(f"  {tag:5s}: N={len(s['data']):6d}  Ms [{s['Ms_act'].min():.2f}, {s['Ms_act'].max():.2f}]  "
@@ -144,11 +154,45 @@ else:
 model.eval()
 
 loader = lambda tag: DataLoader(net.MachChiDataset(splits[tag], augment=False), batch_size=256, shuffle=False)
-calib_loader, test_loader = loader("calib"), loader("test")
+levels = (0.80, 0.90, 0.95)
+if full:
+    # ─── CROSS-CONFORMAL CALIBRATION: pooled out-of-fold residuals of the k-fold runs ──
+    import glob
+    oof = sorted(glob.glob(os.path.join(args.model_dir, f"net{net.idd}{tag_}_{net.input_mode}_fold[0-9]_test.npz")))
+    if len(oof) != args.n_folds:
+        sys.exit(f"--fold full needs the {args.n_folds} k-fold test files of tag '{args.tag}' ({len(oof)} found)")
+    P = [np.load(f, allow_pickle=True) for f in oof]
+    cat = lambda k: np.concatenate([q[k] for q in P])
+    ok = cat("ms_true") >= net.chi_ms_min
+    s_ms  = torch.tensor(np.abs(cat("t_ms_y") - cat("t_ms_mu")) / (cat("t_ms_sig") + 1e-8))
+    s_chi = torch.tensor((np.abs(cat("t_chi_y") - cat("t_chi_mu")) / (cat("t_chi_sig") + 1e-8))[ok])
+    q_ms  = {a: net.get_conformal_quantile(s_ms, a) for a in levels}
+    q_chi = {a: net.get_conformal_quantile(s_chi, a) for a in levels}
+    q_dens = {}
+    if net.dens_head:
+        for k in net.DENS_FIELDS:
+            sc = torch.tensor(np.abs(np.log(cat(f"{k}_true") / cat(f"{k}_mean"))) / (cat(f"{k}_sig_log") + 1e-8))
+            q_dens[k] = {str(a): net.get_conformal_quantile(sc, a) for a in levels}
+    print(f"\nCross-conformal quantiles from {len(s_ms)} out-of-fold images ({len(oof)} folds):")
+    print("  Ms : " + "  ".join(f"q{int(a*100)}={q:.3f}" for a, q in q_ms.items()))
+    print("  chi: " + "  ".join(f"q{int(a*100)}={q:.3f}" for a, q in q_chi.items()))
+    with open(os.path.join(args.model_dir, f"conformal_quantiles_{net.idd}{tag_}_{net.input_mode}_fold{args.fold}.json"), "w") as f:
+        json.dump({"fold": args.fold, "calibration": "pooled out-of-fold k-fold residuals", "seed": args.seed,
+                   "chi_field": net.chi_field, "chi_space": net.chi_space,
+                   "data_file": net.data_file, "image_key": net.image_key, "n_lines": net.n_lines,
+                   "mask_aug_prob": net.mask_aug_prob, "native_beam_pix": native_beam_pix,
+                   "chi_smooth_tc": net.chi_smooth_tc, "chi_ms_min": net.chi_ms_min, "dens_head": net.dens_head,
+                   "dens_ln": q_dens, "ms_ln": {str(a): q for a, q in q_ms.items()},
+                   "chi_target": {str(a): q for a, q in q_chi.items()}}, f, indent=2)
+    print(f"\n--fold full: model trained on all {len(np.unique(splits['train']['sim_id']))} simulations saved to {ckpt_path}. "
+          "No test set — use the k-fold runs for performance.")
+    sys.exit(0)
+
+calib_loader = loader("calib")
+test_loader  = loader("test") if fold is not None else None
 
 # ─── CONFORMAL CALIBRATION (held-out calib fold) ─────────────────────────────
 s_ms, s_chi = net.compute_conformal_scores(model, calib_loader)
-levels = (0.80, 0.90, 0.95)
 q_ms   = {a: net.get_conformal_quantile(s_ms, a) for a in levels}
 q_chi  = {a: net.get_conformal_quantile(s_chi, a) for a in levels}
 print("\nConformal quantiles (calib fold):")
@@ -163,7 +207,7 @@ if net.dens_head:
         print(f"  ln {k}: " + "  ".join(f"q{int(float(a)*100)}={q:.3f}" for a, q in q_dens[k].items()))
 print(f"  temperatures: T_ms={model.log_temp_ms.exp().item():.3f}  T_chi={model.log_temp_chi.exp().item():.3f}")
 with open(os.path.join(args.model_dir, f"conformal_quantiles_{net.idd}{tag_}_{net.input_mode}_fold{args.fold}.json"), "w") as f:
-    json.dump({"fold": args.fold, "chi_field": net.chi_field, "chi_space": net.chi_space,
+    json.dump({"fold": args.fold, "seed": args.seed, "chi_field": net.chi_field, "chi_space": net.chi_space,
                "data_file": net.data_file, "image_key": net.image_key, "n_lines": net.n_lines, "mask_aug_prob": net.mask_aug_prob,
                "native_beam_pix": native_beam_pix,
                "chi_smooth_tc": net.chi_smooth_tc, "chi_ms_min": net.chi_ms_min, "dens_head": net.dens_head,

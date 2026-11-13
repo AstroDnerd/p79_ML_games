@@ -48,6 +48,11 @@ MODELS_ORDER = [
 RUN2 = ("final_co13", "final_co12", "final_coboth")
 
 
+
+def _head(t):
+    """Column of the model applied to observations: trained on every run if available."""
+    return "Ms_foldfull" if "Ms_foldfull" in t.columns else "Ms_foldall"
+
 def save(fig, name, png=False):
     os.makedirs(OUT, exist_ok=True)
     path = f"{OUT}/fig_{name}.{'png' if png else 'pdf'}"
@@ -398,7 +403,7 @@ def fig_obs_compare():
                 continue
             t = pd.read_csv(p)
             folds = [c for c in t.columns if c.startswith("Ms_fold") and c[7:].isdigit()]
-            sc = ax.scatter(t["Ms_tile_spectrum"], t["Ms_foldall"], c=t["coverage"], cmap="viridis", vmin=0.4, vmax=1,
+            sc = ax.scatter(t["Ms_tile_spectrum"], t[_head(t)], c=t["coverage"], cmap="viridis", vmin=0.4, vmax=1,
                             marker=mk, s=18, edgecolor="k", lw=0.3, zorder=3)
             ax.vlines(t["Ms_tile_spectrum"], t[folds].min(axis=1), t[folds].max(axis=1), color="0.6", lw=0.6, zorder=2)
             ax.scatter([], [], marker=mk, color="0.6", edgecolor="k", lw=0.3, label=cloud.capitalize())
@@ -457,9 +462,9 @@ def fig_mwisp():
     for ax, (tag, label) in zip(axes, runs):
         t = mwisp_tiles(tag)
         big = t["tile_pc"] > 10
-        ax.scatter(t.loc[big, "Ms_tile_spectrum"], t.loc[big, "Ms_foldall"], s=10, marker="x", color="0.6", lw=0.6,
+        ax.scatter(t.loc[big, "Ms_tile_spectrum"], t.loc[big, _head(t)], s=10, marker="x", color="0.6", lw=0.6,
                    label=r"tile $>10$ pc", zorder=2)
-        sc = ax.scatter(t.loc[~big, "Ms_tile_spectrum"], t.loc[~big, "Ms_foldall"], c=t.loc[~big, "tile_pc"],
+        sc = ax.scatter(t.loc[~big, "Ms_tile_spectrum"], t.loc[~big, _head(t)], c=t.loc[~big, "tile_pc"],
                         cmap="viridis", vmin=2, vmax=10, s=16, edgecolor="k", lw=0.3, label=r"tile $\leq10$ pc", zorder=3)
         x = np.array([1, 60])
         ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 1.4 * x, "k:", lw=0.6)

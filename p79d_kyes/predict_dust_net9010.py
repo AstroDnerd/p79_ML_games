@@ -19,17 +19,19 @@ Two sets of tiles per region:
             so Ms(dust) can be compared with the CO tile-spectrum Ms and the
             CO-based network predictions tile by tile.
 
-Dust Ms is reported as a LOWER LIMIT. Dust traces all the column along the
-line of sight (diffuse foreground/background and gas below the CO threshold),
-which the periodic training boxes do not have, so ln N has less contrast than
-the turbulent cloud itself. On the CO-matched tiles the mom0 model gives
-Ms(13CO W) ~ Ms(CO spectrum) but Ms(dust) ~ 0.4-0.6 of it (Perseus,
-Ophiuchus). Removing a constant background raises Ms only slightly, so the
-offset is not a simple zero point.
+Dust Ms comes out low: on the CO-matched tiles Ms(dust) is ~0.3 of the Mach
+number of the 13CO tile spectrum (final models). The cause is not established.
+Line-of-sight column that a periodic box lacks is one candidate; the model is
+another (on the 13CO integrated intensity it also returns ~0.3 in Orion A and
+Serpens), and so are magnetic fields, which narrow the density PDF at fixed Ms.
+The adopted value per region is the prediction on the map as observed.
 
-Each tile is predicted with and without a background: "bgsub" removes the
-map's 1st-percentile column (a proxy for the diffuse line-of-sight column that
-lowers the contrast), floored at 5% of it.
+Each tile is also predicted after removing the map's 1st-percentile column
+("bgsub"), floored at 5% of it. This is a DIAGNOSTIC ONLY: the floor turns
+pixels near the background into very low columns and so manufactures contrast
+in ln N (a factor 2 in column near the background becomes a factor 20). In
+low-contrast maps (Musca, Chamaeleon) it doubles the predicted Ms, so the
+bgsub values must not be quoted as estimates or limits.
 
   python predict_dust_net9010.py                              # all regions, mom0 fold models
   python predict_dust_net9010.py --regions perseus orionB --models fold0 foldall
@@ -119,7 +121,7 @@ def predict(models, tiles, r, rows, suffix=""):
             row[f"Ms{suffix}_lo90_{tag}"] = float(np.exp(mu_ms[i] - q_ms * s_ms[i]))
             row[f"Ms{suffix}_hi90_{tag}"] = float(np.exp(mu_ms[i] + q_ms * s_ms[i]))
             row[f"chi{suffix}_{tag}"] = float(net.chi_from_target(mu_c[i]))
-    kf = [t for t in models if t != "foldall"] or list(models)
+    kf = [t for t in models if t not in ("foldall", "foldfull")] or list(models)
     for row in rows:
         row[f"Ms{suffix}_kfold_mean"] = float(np.exp(np.mean(np.log([row[f"Ms{suffix}_{t}"] for t in kf]))))
         row[f"chi{suffix}_kfold_mean"] = float(np.mean([row[f"chi{suffix}_{t}"] for t in kf]))
@@ -285,7 +287,7 @@ def process_matched(name, rc, models):
 
 # ─── main ────────────────────────────────────────────────────────────────────
 models = load_models()
-kf = [t for t in models if t != "foldall"] or list(models)
+kf = [t for t in models if t not in ("foldall", "foldfull")] or list(models)
 summary, matched = [], []
 for name, rc in cfg["regions"].items():
     if args.regions and name not in args.regions:
@@ -308,15 +310,15 @@ if matched:
 
 with open(os.path.join(cfg["output_dir"], "dust_summary.txt"), "w") as fh:
     hdr = (f"{'region':16s} {'units':7s} {'tile_pc':>7s} {'r':>4s} {'n':>3s}  {'Ms [16-84]':>20s}  "
-           f"{'Ms bgsub [16-84]':>20s}  {'chi [16-84]':>18s}  lower limit")
+           f"{'Ms bgsub [16-84]':>20s}  {'chi [16-84]':>18s}  adopted")
     lines = [f"net9010 mom0 (tag {args.tag}) on Herschel dust maps; every tile x k-fold model ({', '.join(kf)}) pooled",
-             "Ms from dust is a LOWER LIMIT: line-of-sight column dilutes the ln N contrast (see the CO-matched tiles).",
-             f"Adopted lower limit per region: the median of the bg-subtracted values (the dust estimate itself is biased low).", hdr]
+             "Adopted value per region: the median on the map as observed. Dust Ms is ~0.3 of the CO tile-spectrum Ms on matched tiles;",
+             "the cause is not established. The bgsub column is a diagnostic only (its floor manufactures contrast in low-contrast maps).", hdr]
     for s in summary:
         lines.append(f"{s['region']:16s} {s['units']:7s} {s['tile_pc']:7.2f} {s['r']:4.2f} {s['n_tiles']:3d}  "
                      f"{s['Ms_med']:6.1f} [{s['Ms_p16']:5.1f},{s['Ms_p84']:5.1f}]  "
                      f"{s['Ms_bgsub_med']:6.1f} [{s['Ms_bgsub_p16']:5.1f},{s['Ms_bgsub_p84']:5.1f}]  "
-                     f"{s['chi_med']:6.2f} [{s['chi_p16']:4.2f},{s['chi_p84']:4.2f}]  Ms > {s['Ms_bgsub_med']:.1f}")
+                     f"{s['chi_med']:6.2f} [{s['chi_p16']:4.2f},{s['chi_p84']:4.2f}]  Ms = {s['Ms_med']:.1f}")
     if matched:
         lines += ["", "CO-matched tiles (same sky area; dust smoothed to the coarser beam on the CO grid)",
                   f"{'region':16s} {'tile':>11s} {'CO spec':>8s} {'CO proj':>8s} {'dust':>6s} {'dust bg-':>8s}"]

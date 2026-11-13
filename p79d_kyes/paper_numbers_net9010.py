@@ -226,10 +226,15 @@ if not args.no_linewidth:
     pr("\n  Linewidth baseline Ms_obs = sqrt(3) sigma_tile / c_s on run-2 images (masked, intensity-weighted)")
     with h5py.File(f"{args.data_dir}/p79d_mach_grid_256_co_v2_fcrao500.h5", "r") as f:
         cs = float(f.attrs["sound_speed_kms"])
+        rt = json.loads(f.attrs["rt_json"]); ob = json.loads(f.attrs["observe_version"])
+        # thermal width of each line and the top-hat channel response, removed in quadrature below
+        sth = {m["tag"]: np.sqrt(1.380649e-16 * rt["T_K"] / (m["mass_amu"] * 1.6735575e-24)) / 1e5 for m in rt["molecules"]}
+        dv = ob["channel_width_kms"]
         key = {(a, b, c): i for i, (a, b, c) in enumerate(zip(f["samples/sim_id"][:], f["samples/frame"][:], f["samples/los"][:]))}
         d = D["final_co13"]
         idx = np.array([key[(a, b, c)] for a, b, c in zip(d["sim_id"], d["frame"], d["los"])])
         order = np.argsort(idx)
+        los_mw = f["labels/Ms_los_mw"][:][idx] if "labels/Ms_los_mw" in f else None
         res = {}
         for line in ("13co", "12co"):
             sig = np.empty(len(idx))
@@ -243,10 +248,32 @@ if not args.no_linewidth:
                     vb = np.sum(w * a[j, 1][m]) / w.sum()
                     sig[order[c0 + j]] = np.sqrt(np.sum(w * (a[j, 2][m] ** 2 + (a[j, 1][m] - vb) ** 2)) / w.sum())
             res[line] = np.sqrt(3) * sig / cs
+            res[line + "_corr"] = np.sqrt(3) * np.sqrt(np.clip(sig ** 2 - sth[line] ** 2 - dv ** 2 / 12, 1e-8, None)) / cs
     for line, tag in (("13co", "final_co13"), ("12co", "final_co12")):
         dd = D[tag]
         e = np.abs(res[line] / d["ms_true"] - 1)
         pr(f"  linewidth {line}: R2 lnMs {r2(np.log(d['ms_true']), np.log(res[line])):.3f}; median frac err by bin " +
            " ".join(f"{b}:{np.median(e[inbin(d, *b)]):.3f}" for b in BINS) +
            f"; median bias at Ms>=3 {np.median(res[line][d['ms_true'] >= 3] / d['ms_true'][d['ms_true'] >= 3] - 1):+.3f}")
+        ec = np.abs(res[line + "_corr"] / d["ms_true"] - 1)
+        pr(f"  linewidth {line}, thermal ({sth[line]:.3f} km/s) and channel ({dv:.3f} km/s) widths removed: R2 lnMs "
+           f"{r2(np.log(d['ms_true']), np.log(res[line + '_corr'])):.3f}; median frac err by bin " +
+           " ".join(f"{b}:{np.median(ec[inbin(d, *b)]):.3f}" for b in BINS) +
+           f"; median ratio by bin " + " ".join(f"{b}:{np.median((res[line + '_corr'] / d['ms_true'])[inbin(d, *b)]):.2f}" for b in BINS))
+        if True:                           # against the mass-weighted LOS dispersion x sqrt(3), closer to what a line measures
+            if los_mw is not None:
+                tw = np.sqrt(3) * los_mw
+                pr(f"  linewidth {line} (corrected) vs sqrt(3) x mass-weighted LOS Mach: median frac err by bin " +
+                   " ".join(f"{b}:{np.median(np.abs(res[line + '_corr'] / tw - 1)[inbin(d, *b)]):.3f}" for b in BINS))
         pr(f"  network {tag}: by bin " + " ".join(f"{b}:{np.median(frac(dd, inbin(dd, *b))):.3f}" for b in BINS))
+        if line == "13co":                 # what the offset network / Ms_obs is on held-out SIMULATIONS (same images, d is final_co13)
+            pr(f"  network {tag} / Ms_obs (linewidth as measured, as on real tiles): median by bin " +
+               " ".join(f"{b}:{np.median((d['ms_mean'] / res[line])[inbin(d, *b)]):.3f}" for b in BINS) +
+               f"; Ms_obs/true " + " ".join(f"{b}:{np.median((res[line] / d['ms_true'])[inbin(d, *b)]):.3f}" for b in BINS) +
+               f"; network/true " + " ".join(f"{b}:{np.median((d['ms_mean'] / d['ms_true'])[inbin(d, *b)]):.3f}" for b in BINS))
+            for lo_, hi_ in ((3, 20.01), (5, 15)):
+                s_ = (d["ms_true"] >= lo_) & (d["ms_true"] < hi_)
+                rr = (d["ms_mean"] / res[line])[s_]
+                runs_ = np.array([np.median(rr[d["sim_id"][s_] == g]) for g in np.unique(d["sim_id"][s_])])
+                pr(f"    Ms {lo_}-{hi_}: network/Ms_obs median {np.median(rr):.3f}, 16-84% {np.percentile(rr, 16):.3f}-{np.percentile(rr, 84):.3f}; "
+                   f"per-run medians {runs_.min():.2f}-{runs_.max():.2f} ({len(runs_)} runs)")

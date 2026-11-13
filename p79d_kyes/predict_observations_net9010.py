@@ -15,9 +15,12 @@ For each cloud in obs_clouds.json:
      then net9010.preprocess_maps, plus the resolution channel
      r = clip(native beam of the model's training maps / beam_FWHM_in_pixels, 0.4, 1)
      (native beam = 1 px for the projected dataset, ~3.1 px for the 13CO mocks);
-  4. predictions from every net9010 checkpoint found (k-fold models and the
-     --fold all model), with 90% conformal intervals from each model's
-     calibration quantiles.
+  4. predictions from every net9010 checkpoint found: the k-fold models and the
+     model trained on every simulation (--fold full; the older --fold all model
+     is used if there is no full one), with 90% conformal intervals from each
+     model's calibration quantiles. The headline value of a tile is the full
+     model's; the range of the k-fold models (Ms_kfold_min/max, chi_kfold_min/max)
+     is the model-to-model scatter and must be quoted with it.
 
   python predict_observations_net9010.py                      # all clouds, all models
   python predict_observations_net9010.py --clouds perseus --models foldall
@@ -97,6 +100,7 @@ def spatial_pixel_arcsec(hdr):
 
 
 fill_tile = net.fill_masked_moments      # identical filling for training mocks and real tiles
+FINAL_TAGS = ("foldall", "foldfull")     # models that are not k-fold models
 
 
 def model_lines(models):
@@ -233,18 +237,21 @@ def process_cloud(name, cc, models):
                     row[f"{k}_{tag}"] = float(np.exp(mu_d[i, j]))
                     row[f"{k}_lo90_{tag}"] = float(np.exp(mu_d[i, j] - qd * s_d[i, j]))
                     row[f"{k}_hi90_{tag}"] = float(np.exp(mu_d[i, j] + qd * s_d[i, j]))
-    kf = [t for t in models if t != "foldall"]
+    kf = [t for t in models if t not in FINAL_TAGS]
     for row in rows:
         if kf:
             lm = np.log([row[f"Ms_{t}"] for t in kf])
+            ch = [row[f"chi_{t}"] for t in kf]
             row["Ms_kfold_mean"], row["Ms_kfold_spread"] = float(np.exp(lm.mean())), float(lm.std())
-            row["chi_kfold_mean"] = float(np.mean([row[f"chi_{t}"] for t in kf]))
+            row["Ms_kfold_min"], row["Ms_kfold_max"] = float(np.exp(lm.min())), float(np.exp(lm.max()))
+            row["chi_kfold_mean"] = float(np.mean(ch))
+            row["chi_kfold_min"], row["chi_kfold_max"] = float(np.min(ch)), float(np.max(ch))
 
     with open(os.path.join(cfg["output_dir"], f"{name}_net9010_tiles.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
     # figure: integrated intensity with tiles labelled by the headline model
-    head = "foldall" if "foldall" in models else None
+    head = next((t for t in ("foldfull", "foldall") if t in models), None)
     fig, ax = plt.subplots(figsize=(8, 7))
     ax.imshow(np.log10(np.clip(m0, floor, None)), origin="lower", cmap="Greys")
     for row in rows:
@@ -281,7 +288,7 @@ for name, cc in cfg["clouds"].items():
 
 # per-cloud estimate: every tile x every k-fold model pooled; median and 16-84% range.
 # chi only from (tile, model) pairs where that model's chi head applies.
-kf = [t for t in models if t != "foldall"] or list(models)
+kf = [t for t in models if t not in FINAL_TAGS] or list(models)
 cloud_rows = []
 for info, rows in summary:
     rec = {"cloud": info["cloud"], "n_tiles": len(rows), "n_models": len(kf),
@@ -304,7 +311,7 @@ with open(os.path.join(cfg["output_dir"], "net9010_observations_summary.txt"), "
     f.write(f"{'cloud':10s} {'tracer':10s} {'T_K':>4s} {'tile_pc':>7s} {'r':>5s} {'n':>3s} "
             + " ".join(f"{'Ms_' + t:>12s}" for t in models) + f" {'chi_med':>8s} {'Ms_tilespec':>11s}\n")
     for info, rows in summary:
-        tagc = "foldall" if "foldall" in models else next(iter(models))
+        tagc = next((t for t in ("foldfull", "foldall") if t in models), next(iter(models)))
         f.write(f"{info['cloud']:10s} {info['tracer']:10s} {info['T_K']:4.0f} {info['tile_pc']:7.1f} {info['r']:5.2f} "
                 f"{len(rows):3d} " + " ".join(f"{np.median([r[f'Ms_{t}'] for r in rows]):12.2f}" for t in models)
                 + f" {np.median([r[f'chi_{tagc}'] for r in rows]):8.3f}"

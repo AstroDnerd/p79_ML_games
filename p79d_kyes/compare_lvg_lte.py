@@ -14,8 +14,9 @@ Per image and line:
   * detected fraction after masking;
   * median sigma_v (moment 2) and the tile-spectrum Mach number
     Ms_obs = sqrt(3) sigma_tile / c_s;
-  * predictions of the run-2 models (co2_13, co2_12, co2_both; --models fold
-    tag, default foldall) on both versions.
+  * predictions of the final run-2 models (final_co13, final_co12, final_coboth) on both
+    versions, by default out-of-fold (--models oof): each image by the k-fold model that
+    held its simulation out.
 
   python extract_sim_co.py reobserve --config sims_mach_grid.json --rt radmc_co_lvg.json --obs fcrao500
   python extract_sim_co.py merge     --config sims_mach_grid.json --rt radmc_co_lvg.json --obs fcrao500
@@ -35,9 +36,9 @@ p = argparse.ArgumentParser()
 p.add_argument("--obs", default="fcrao500")
 p.add_argument("--data_dir", default="/home/x-nbisht1/scratch/projects/p79d_dataset")
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
-p.add_argument("--tags", nargs="*", default=["co2_13", "co2_12", "co2_both"])
-p.add_argument("--models", default="foldall")
-p.add_argument("--out", default="/home/x-nbisht1/plots/lvg_check")
+p.add_argument("--tags", nargs="*", default=["final_co13", "final_co12", "final_coboth"])
+p.add_argument("--models", default="oof", help="oof = each image by the k-fold model that held out its simulation; or one fold tag")
+p.add_argument("--out", default="/home/x-nbisht1/plots/lvg_check_final")
 args = p.parse_args()
 os.makedirs(args.out, exist_ok=True)
 LINES = ("13co", "12co")
@@ -92,33 +93,47 @@ for line in LINES:
                 r[f"Ms_obs_{line}_{tag}"] = np.nan
 
 # network predictions on both versions
+# --models oof (default): every image is predicted by the k-fold model that held its simulation
+# out, so neither version of the frame was seen in training. A fold tag (fold0 ... foldfull)
+# uses that one model for all images (then the LTE versions are in its training set).
+sim_names = f_lte["sims/name"][:].astype(str)
+sim_fold = dict(zip(sim_names, net.assign_sim_folds(f_lte["sims/Ms_mean"][:], f_lte["sims/xi"][:], 5)))
+img_fold = np.array([sim_fold[r["sim"]] for r in rows])
 for mt in args.tags:
-    qf = f"{args.model_dir}/conformal_quantiles_9010_{mt}_allmom_{args.models}.json"
-    ck = f"{args.model_dir}/test9010_{mt}_allmom_{args.models}.pth"
-    if not (os.path.exists(qf) and os.path.exists(ck)):
-        print(f"  skip {mt}: no {args.models} model"); continue
-    q = json.load(open(qf))
-    keys = q["image_key"].split("+")
-    net.n_input_channels, net.input_mode = 3, "allmom"
-    net.n_lines, net.dens_head = len(keys), q.get("dens_head", False)
-    net.n_model_channels = net.n_lines * 3 + 1
-    net.chi_field, net.chi_space = q["chi_field"], q["chi_space"]
-    sd = torch.load(ck, map_location=net.device)
-    m = net.thisnet()
-    for k in ("train_curve", "val_curve"):
-        setattr(m, k, torch.zeros_like(sd[k]))
-    m.load_state_dict(sd); m.eval()
-    for tag, f, idx in (("lvg", f_lvg, I_lvg), ("lte", f_lte, I_lte)):
-        parts = [net.obs_to_training_units(take(f, k, idx), take(f, k.replace("images_obs", "mask_obs"), idx), cs)
-                 for k in keys]
-        x = net.preprocess_lines(torch.cat(parts, dim=1))
-        x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1).to(net.device)    # native resolution: r = 1
-        with torch.no_grad():
-            res = [m(x[i:i + 32]) for i in range(0, len(x), 32)]
-        ms = torch.cat([r_[0][0].view(-1) for r_ in res]).exp().cpu().numpy()
-        chi = net.chi_from_target(torch.cat([r_[1][0].view(-1) for r_ in res]).cpu().numpy())
-        for j, r in enumerate(rows):
-            r[f"Ms_{mt}_{tag}"], r[f"chi_{mt}_{tag}"] = float(ms[j]), float(chi[j])
+    use = sorted(set(img_fold)) if args.models == "oof" else [args.models]
+    done = True
+    for k in use:
+        mtag = f"fold{k}" if args.models == "oof" else k
+        qf = f"{args.model_dir}/conformal_quantiles_9010_{mt}_allmom_{mtag}.json"
+        ck = f"{args.model_dir}/test9010_{mt}_allmom_{mtag}.pth"
+        if not (os.path.exists(qf) and os.path.exists(ck)):
+            print(f"  skip {mt}: no {mtag} model"); done = False; break
+        q = json.load(open(qf))
+        keys = q["image_key"].split("+")
+        net.n_input_channels, net.input_mode = 3, "allmom"
+        net.n_lines, net.dens_head = len(keys), q.get("dens_head", False)
+        net.n_model_channels = net.n_lines * 3 + 1
+        net.chi_field, net.chi_space = q["chi_field"], q["chi_space"]
+        sd = torch.load(ck, map_location=net.device)
+        m = net.thisnet()
+        for kk in ("train_curve", "val_curve"):
+            setattr(m, kk, torch.zeros_like(sd[kk]))
+        m.load_state_dict(sd); m.eval()
+        sel = np.where(img_fold == k)[0] if args.models == "oof" else np.arange(len(rows))
+        for tag, f, idx in (("lvg", f_lvg, I_lvg), ("lte", f_lte, I_lte)):
+            parts = [net.obs_to_training_units(take(f, kk, idx[sel]), take(f, kk.replace("images_obs", "mask_obs"), idx[sel]), cs)
+                     for kk in keys]
+            x = net.preprocess_lines(torch.cat(parts, dim=1))
+            x = torch.cat([x, torch.ones_like(x[:, :1])], dim=1).to(net.device)    # native resolution: r = 1
+            with torch.no_grad():
+                res = [m(x[i:i + 32]) for i in range(0, len(x), 32)]
+            ms = torch.cat([r_[0][0].view(-1) for r_ in res]).exp().cpu().numpy()
+            chi = net.chi_from_target(torch.cat([r_[1][0].view(-1) for r_ in res]).cpu().numpy())
+            for j, i in enumerate(sel):
+                rows[i][f"Ms_{mt}_{tag}"], rows[i][f"chi_{mt}_{tag}"] = float(ms[j]), float(chi[j])
+    if not done:
+        for r in rows:
+            r.pop(f"Ms_{mt}_lvg", None)
 
 with open(os.path.join(args.out, "lvg_lte_images.csv"), "w", newline="") as fh:
     w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)

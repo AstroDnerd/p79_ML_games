@@ -25,6 +25,9 @@ p.add_argument("--compare", choices=["allmom", "mom0"], default=None)
 p.add_argument("--tag", default="", help="run tag used in training, e.g. 13co")
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
 p.add_argument("--plot_dir", default=os.path.join(os.environ["HOME"], "plots"))
+p.add_argument("--exclude_sims", default="",
+               help="comma list of simulation names left out of the evaluation, e.g. the two runs whose only images "
+                    "under the Ms <= 20 cut are spin-up frames: xi_0.5_mach160,xi_0.5_mach320")
 args = p.parse_args()
 os.makedirs(args.plot_dir, exist_ok=True)
 MS_BINS = [(0, 0.5), (0.5, 1), (1, 3), (3, 7), (7, 20.01)]
@@ -42,6 +45,11 @@ def load(mode):
     d = {k: np.concatenate([q[k] for q in parts]) for k in keys}
     d["folds"] = sorted(int(q["fold"]) for q in parts)
     d["sim_names"] = parts[0]["sim_names"]
+    if args.exclude_sims:
+        drop = np.isin(np.asarray(d["sim_names"]).astype(str)[d["sim_id"]], args.exclude_sims.split(","))
+        print(f"excluded {drop.sum()} images of {args.exclude_sims}")
+        d = {k: (v[~drop] if isinstance(v, np.ndarray) and len(v) == len(drop) and k != "sim_names" else v)
+             for k, v in d.items()}
     return d
 
 

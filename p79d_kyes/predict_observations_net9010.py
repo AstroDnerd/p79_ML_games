@@ -51,10 +51,16 @@ p.add_argument("--models", nargs="*", default=None,
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
 p.add_argument("--mode", default="allmom", choices=["allmom", "mom0"])
 p.add_argument("--tag", default="", help="run tag of the models, e.g. 13co")
+p.add_argument("--dump_inputs", default=None,
+               help="also save the network inputs of every tile (and per-line masks) to this .npz; outputs then go "
+                    "to <output_dir>_dump so an existing run is not overwritten (used by diag_twoline_net9010.py)")
 args = p.parse_args()
 cfg = json.load(open(args.config))
 if args.tag:
     cfg["output_dir"] = cfg["output_dir"].rstrip("/") + f"_{args.tag}"
+if args.dump_inputs:
+    cfg["output_dir"] += "_dump"
+DUMP = {"X": [], "det": [], "cloud": [], "tile_y": [], "tile_x": [], "tile_pc": [], "Ms_tile_spectrum": [], "c_s": []}
 os.makedirs(cfg["output_dir"], exist_ok=True)
 T_SIZE = cfg["tile_size"]
 
@@ -211,6 +217,14 @@ def process_cloud(name, cc, models):
                      "sigma_tile_spectrum_kms": float(sig_tile),
                      "Ms_tile_spectrum": float(np.sqrt(3) * sig_tile / cs)})
     X = torch.stack(xs).to(net.device)
+    if args.dump_inputs:
+        DUMP["X"].append(torch.stack(xs).numpy())
+        for (y, x) in td["positions"]:
+            DUMP["det"].append([float(Ls[t]["mask"][y:y + T_SIZE, x:x + T_SIZE].mean()) for t in lines])
+        for row in rows:
+            for k in ("cloud", "tile_y", "tile_x", "Ms_tile_spectrum"):
+                DUMP[k].append(row[k])
+            DUMP["tile_pc"].append(tile_pc); DUMP["c_s"].append(cs)
 
     for tag, (m, q) in models.items():
         net.chi_field, net.chi_space = q["chi_field"], q["chi_space"]
@@ -317,3 +331,7 @@ with open(os.path.join(cfg["output_dir"], "net9010_observations_summary.txt"), "
                 + f" {np.median([r[f'chi_{tagc}'] for r in rows]):8.3f}"
                 + f" {np.median([r['Ms_tile_spectrum'] for r in rows]):11.2f}\n")
 print(f"\nWrote {cfg['output_dir']}/net9010_observations_summary.txt")
+if args.dump_inputs and DUMP["X"]:
+    np.savez_compressed(args.dump_inputs, X=np.concatenate(DUMP["X"]), lines=np.array(model_lines(models)),
+                        **{k: np.array(v) for k, v in DUMP.items() if k != "X"})
+    print(f"Wrote {args.dump_inputs}")

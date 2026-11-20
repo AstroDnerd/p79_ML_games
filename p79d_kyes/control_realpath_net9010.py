@@ -32,7 +32,7 @@ import argparse, contextlib, csv, io, json, os, sys
 import numpy as np
 import h5py
 import torch
-from scipy.ndimage import distance_transform_edt, gaussian_filter, zoom
+from scipy.ndimage import distance_transform_edt, gaussian_filter, uniform_filter1d, zoom
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import networks_nbisht.net9010 as net
@@ -40,18 +40,25 @@ import get_Observation_Data as G
 
 p = argparse.ArgumentParser()
 p.add_argument("--tag", default="final_co13")
-p.add_argument("--line", default="13co")
+p.add_argument("--lines", default="13co", help="comma list in the model's channel order, e.g. 13co,12co")
+p.add_argument("--std_data", default=None, help="file with the reference images fed directly (default: --data), e.g. the MWISP-like set")
+p.add_argument("--chan_kms", type=float, default=None, help="rebin the velocity axis to this channel width (default: as rendered)")
+p.add_argument("--label", default="", help="suffix of the output file names")
 p.add_argument("--data", default="/home/x-nbisht1/scratch/projects/p79d_dataset/p79d_mach_grid_256_co_v2_fcrao500.h5")
 p.add_argument("--model_dir", default="/home/x-nbisht1/projects/p79d_dataset/models")
 p.add_argument("--n_per_sim", type=int, default=12)
 p.add_argument("--ms_min", type=float, default=2.0)
 p.add_argument("--beam_pix_obs", type=float, default=2.0, help="beam FWHM in pixels of the emulated real map")
-p.add_argument("--noise", type=float, default=0.2, help="K per coarse pixel and channel")
+p.add_argument("--noise", default="0.2", help="K per coarse pixel and channel; one value per line")
 p.add_argument("--seed", type=int, default=1)
 p.add_argument("--out", default="/home/x-nbisht1/plots/control_realpath")
 args = p.parse_args()
 os.makedirs(args.out, exist_ok=True)
 rng = np.random.default_rng(args.seed)
+LINES = args.lines.split(",")
+NOISE = dict(zip(LINES, [float(x) for x in args.noise.split(",")] * (len(LINES) if "," not in args.noise else 1)))
+fs = h5py.File(args.std_data or args.data, "r")
+cdel = args.chan_kms or None
 
 f = h5py.File(args.data, "r")
 rt, ob = json.loads(f.attrs["rt_json"]), json.loads(f.attrs["observe_version"])
@@ -60,7 +67,9 @@ pix = (rt["box_length_pc"] / rt["target_res"]) / ob["distance_pc"] * 206265.0
 beam_pix = ob["beam_fwhm_arcsec"] / pix                       # 3.1 for fcrao500
 down = args.beam_pix_obs / beam_pix                           # < 1: coarser grid, like the real map
 up = beam_pix / args.beam_pix_obs                             # what predict_observations applies
-n_run = G.min_channels_for(ob["min_channels"], ob["channel_width_kms"])
+n_run = G.min_channels_for(ob["min_channels"], args.chan_kms or ob["channel_width_kms"])
+for k_ in ("sim_id", "frame", "los"):
+    assert np.array_equal(f[f"samples/{k_}"][:], fs[f"samples/{k_}"][:]), "reference file is ordered differently"
 names = f["sims/name"][:].astype(str)
 sim_fold = net.assign_sim_folds(f["sims/Ms_mean"][:], f["sims/xi"][:], 5)
 sid, ms, los, aug = f["samples/sim_id"][:], f["labels/Ms"][:], f["samples/los"][:], f["samples/aug_index"][:]
@@ -74,7 +83,8 @@ for g in np.unique(sid):
         pick += list(rng.choice(c, min(args.n_per_sim, len(c)), replace=False))
 pick = np.sort(np.array(pick))
 print(f"{len(pick)} images of {len(np.unique(sid[pick]))} simulations; beam {beam_pix:.2f} px -> {args.beam_pix_obs} px "
-      f"(x{down:.3f}), upsampled x{up:.3f}; min run {n_run} channels; noise {args.noise} K", flush=True)
+      f"(x{down:.3f}), upsampled x{up:.3f}; min run {n_run} channels; noise {NOISE} K; lines {LINES}; "
+      f"channels {args.chan_kms or ob['channel_width_kms']} km/s", flush=True)
 
 
 def tile_ms(m0, m1, m2, mask):
@@ -83,11 +93,19 @@ def tile_ms(m0, m1, m2, mask):
     return float(np.sqrt(3) * np.sqrt(np.sum(w * (s ** 2 + (v - vb) ** 2)) / w.sum()) / cs)
 
 
-def real_path(T, v):
+def real_path(T, v, noise):
     """Steps 1-5 of the docstring for one noise-free [x, y, v] cube. Returns the network input and diagnostics."""
     Tb = gaussian_filter(T, (beam_pix / 2.3548, beam_pix / 2.3548, 0), mode="wrap")
     Tc = zoom(Tb, (down, down, 1), order=1, mode="grid-wrap", grid_mode=True)
-    Tc = Tc + rng.normal(0, args.noise, Tc.shape)
+    if cdel:                                # coarser channels: boxcar over the new width, then sample
+        dv0 = abs(v[1] - v[0]); nb = max(1, int(round(cdel / dv0)))
+        Tc = uniform_filter1d(Tc, nb, axis=2, mode="nearest")
+        vn = np.arange(v.min(), v.max(), cdel) if v[1] > v[0] else np.arange(v.max(), v.min(), -cdel)
+        fi = np.interp(vn, v if v[1] > v[0] else v[::-1], np.arange(len(v)) if v[1] > v[0] else np.arange(len(v))[::-1])
+        i0 = np.clip(np.floor(fi).astype(int), 0, len(v) - 2); w1 = (fi - i0)[None, None, :]
+        Tc = Tc[:, :, i0] * (1 - w1) + Tc[:, :, i0 + 1] * w1
+        v = vn
+    Tc = Tc + rng.normal(0, noise, Tc.shape)
     with contextlib.redirect_stdout(io.StringIO()):
         m0, m1, m2, mask = G.compute_moment_maps(Tc.transpose(2, 1, 0), v, noise_threshold=ob["mask_sigma"], min_channels=n_run)
     m0, m1, m2, mask = m0.T, m1.T, m2.T, mask.T
@@ -96,9 +114,10 @@ def real_path(T, v):
     ms_obs = tile_ms(m0, m1, m2, mask & np.isfinite(m1) & np.isfinite(m2))
     good = mask & np.isfinite(m1) & np.isfinite(m2)                 # regrid() of predict_observations_net9010.py
     _, (iy, ix) = distance_transform_edt(~good, return_indices=True)
-    u1, u2 = zoom(m1[iy, ix], up, order=1), zoom(m2[iy, ix], up, order=1)
-    umask = zoom(mask.astype(np.uint8), up, order=0).astype(bool)
-    u0 = zoom(m0, up, order=1)
+    upe = max(up, (net.img_size + 0.6) / min(m0.shape))           # never fall a pixel short of one tile
+    u1, u2 = zoom(m1[iy, ix], upe, order=1), zoom(m2[iy, ix], upe, order=1)
+    umask = zoom(mask.astype(np.uint8), upe, order=0).astype(bool)
+    u0 = zoom(m0, upe, order=1)
     u1, u2 = np.where(umask, u1, np.nan), np.where(umask, u2, np.nan)
     n = net.img_size
     if min(u0.shape) < n:
@@ -112,25 +131,29 @@ def real_path(T, v):
 
 rows, X_path, X_std = [], [], []
 for n_done, i in enumerate(pick):
+    outs, stds = [], []
     with h5py.File(os.path.join(cube_dir, cfile[i]), "r") as h:
         gq = h[cgroup[i]]
-        T = gq[f"cube_{args.line}_{los[i]}_{aug[i]}"][()].astype(np.float32)
-        v = gq[f"v_{args.line}_{los[i]}"][()].astype(np.float64)
-    out = real_path(T, v)
-    if out is None:
+        for line in LINES:
+            T = gq[f"cube_{line}_{los[i]}_{aug[i]}"][()].astype(np.float32)
+            v = gq[f"v_{line}_{los[i]}"][()].astype(np.float64)
+            outs.append(real_path(T, v, NOISE[line]))
+    if any(o_ is None for o_ in outs):
         continue
-    o, mk = f[f"images_obs_{args.line}"][i], f[f"mask_obs_{args.line}"][i]
-    x_std = net.preprocess_maps(net.obs_to_training_units(o[None], mk[None], cs)[0])
-    good = mk & np.isfinite(o[1]) & np.isfinite(o[2])
+    for line in LINES:
+        o, mk = fs[f"images_obs_{line}"][i], fs[f"mask_obs_{line}"][i]
+        good = mk & np.isfinite(o[1]) & np.isfinite(o[2])
+        stds.append((net.preprocess_maps(net.obs_to_training_units(o[None], mk[None], cs)[0]), float(mk.mean()),
+                     tile_ms(o[0], o[1], o[2], good) if good.sum() > 10 else np.nan))
     rows.append({"sim": names[sid[i]], "fold": int(sim_fold[sid[i]]), "Ms_true": float(ms[i]),
-                 "det_path": out[2], "det_std": float(mk.mean()),
-                 "Ms_obs_path": out[1], "Ms_obs_std": tile_ms(o[0], o[1], o[2], good)})
-    X_path.append(out[0]); X_std.append(x_std)
+                 "det_path": outs[0][2], "det_std": stds[0][1],
+                 "Ms_obs_path": outs[0][1], "Ms_obs_std": stds[0][2]})
+    X_path.append(torch.cat([o_[0] for o_ in outs])); X_std.append(torch.cat([s_[0] for s_ in stds]))
     if n_done % 50 == 0:
         print(f"  {n_done}/{len(pick)}", flush=True)
 
-net.n_input_channels, net.input_mode, net.n_lines = 3, "allmom", 1
-net.n_model_channels = 4
+net.n_input_channels, net.input_mode, net.n_lines = 3, "allmom", len(LINES)
+net.n_model_channels = 3 * len(LINES) + 1
 folds = np.array([r["fold"] for r in rows])
 for k in sorted(set(folds)):
     q = json.load(open(f"{args.model_dir}/conformal_quantiles_9010_{args.tag}_allmom_fold{k}.json"))
@@ -151,12 +174,13 @@ for k in sorted(set(folds)):
         for j, s in enumerate(sel):
             rows[s][f"Ms_{key}"], rows[s][f"chi_{key}"] = float(mu[j]), float(ch[j])
 
-with open(os.path.join(args.out, f"control_realpath_{args.tag}.csv"), "w", newline="") as fh:
+with open(os.path.join(args.out, f"control_realpath_{args.tag}{args.label}.csv"), "w", newline="") as fh:
     w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 A = {k: np.array([r[k] for r in rows]) for k in rows[0] if k != "sim"}
 med = lambda x: float(np.median(x))
 L = [f"Real-data path control, model {args.tag} (out-of-fold), {len(rows)} images with Ms >= {args.ms_min}; "
-     f"beam {args.beam_pix_obs} px upsampled x{up:.2f}, noise {args.noise} K",
+     f"lines {LINES}, beam {args.beam_pix_obs} px upsampled x{up:.2f}, noise {args.noise} K, channels {args.chan_kms or ob['channel_width_kms']} km/s; "
+     f"std = images of {os.path.basename(args.std_data or args.data)} fed directly; Ms_obs from {LINES[0]}",
      f"{'Ms bin':>10s} {'N':>5s} {'path/std':>9s} {'path/true':>10s} {'std/true':>9s} {'path/Msobs':>11s} {'std/Msobs':>10s} "
      f"{'Msobs p/true':>13s} {'det path':>9s} {'dchi':>6s}"]
 for lo, hi in [(2, 4), (4, 7), (7, 11), (11, 20.01), (2, 20.01)]:
@@ -167,5 +191,5 @@ for lo, hi in [(2, 4), (4, 7), (7, 11), (11, 20.01), (2, 20.01)]:
              f"{med(A['Ms_std'][b] / A['Ms_true'][b]):9.3f} {med(A['Ms_path'][b] / A['Ms_obs_path'][b]):11.3f} "
              f"{med(A['Ms_std'][b] / A['Ms_obs_std'][b]):10.3f} {med(A['Ms_obs_path'][b] / A['Ms_true'][b]):13.3f} "
              f"{med(A['det_path'][b]):9.2f} {med(A['chi_path'][b] - A['chi_std'][b]):+6.3f}")
-open(os.path.join(args.out, f"control_realpath_{args.tag}.txt"), "w").write("\n".join(L) + "\n")
+open(os.path.join(args.out, f"control_realpath_{args.tag}{args.label}.txt"), "w").write("\n".join(L) + "\n")
 print("\n".join(L))

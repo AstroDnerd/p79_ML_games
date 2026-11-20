@@ -19,8 +19,8 @@ Two sets of tiles per region:
             so Ms(dust) can be compared with the CO tile-spectrum Ms and the
             CO-based network predictions tile by tile.
 
-Dust Ms comes out low: on the CO-matched tiles Ms(dust) is ~0.3 of the Mach
-number of the 13CO tile spectrum (final models). The cause is not established.
+Dust Ms comes out low: on the CO-matched tiles Ms(dust) is 0.4 (all-runs model;
+0.3 for the k-fold models) of the Mach number of the 13CO tile spectrum. The cause is not established.
 Line-of-sight column that a periodic box lacks is one candidate; the model is
 another (on the 13CO integrated intensity it also returns ~0.3 in Orion A and
 Serpens), and so are magnetic fields, which narrow the density PDF at fixed Ms.
@@ -125,6 +125,9 @@ def predict(models, tiles, r, rows, suffix=""):
     for row in rows:
         row[f"Ms{suffix}_kfold_mean"] = float(np.exp(np.mean(np.log([row[f"Ms{suffix}_{t}"] for t in kf]))))
         row[f"chi{suffix}_kfold_mean"] = float(np.mean([row[f"chi{suffix}_{t}"] for t in kf]))
+        # adopted value: the model trained on every run if present, else the k-fold geometric mean
+        row[f"Ms{suffix}_adopted"] = row.get(f"Ms{suffix}_foldfull", row[f"Ms{suffix}_kfold_mean"])
+        row[f"chi{suffix}_adopted"] = row.get(f"chi{suffix}_foldfull", row[f"chi{suffix}_kfold_mean"])
 
 
 # ─── maps ────────────────────────────────────────────────────────────────────
@@ -218,8 +221,8 @@ def process_native(name, rc, models):
     predict(models, [with_bg(t, bg) for t in tiles], r, rows, "_bgsub")
     for row in rows:
         print(f"    tile ({row['tile_y']:4d},{row['tile_x']:4d}) cov {row['coverage']:.2f}  "
-              f"sigma_lnN {row['sigma_lnN']:.2f}  Ms k-fold {row['Ms_kfold_mean']:5.1f}  "
-              f"bgsub {row['Ms_bgsub_kfold_mean']:5.1f}  chi {row['chi_kfold_mean']:.2f}")
+              f"sigma_lnN {row['sigma_lnN']:.2f}  Ms {row['Ms_adopted']:5.1f} (k-fold mean {row['Ms_kfold_mean']:5.1f})  "
+              f"bgsub {row['Ms_bgsub_adopted']:5.1f}  chi {row['chi_adopted']:.2f}")
     with open(os.path.join(cfg["output_dir"], f"{name}_dust_tiles.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
@@ -229,9 +232,9 @@ def process_native(name, rc, models):
     for row in rows:
         ax.add_patch(Rectangle((row["tile_x"], row["tile_y"]), T_SIZE, T_SIZE, fill=False, ec="tab:red", lw=1.2))
         ax.text(row["tile_x"] + 3, row["tile_y"] + T_SIZE - 3,
-                f"Ms={row['Ms_kfold_mean']:.1f}\nbg-={row['Ms_bgsub_kfold_mean']:.1f}",
+                f"Ms={row['Ms_adopted']:.1f}\nbg-={row['Ms_bgsub_adopted']:.1f}",
                 color="tab:red", fontsize=7, va="top")
-    ax.set_title(f"{name}: net9010 mom0 on {rc['units']} (k-fold mean), tile {tile_pc:.2f} pc, r={r:.2f}")
+    ax.set_title(f"{name}: net9010 mom0 on {rc['units']} (all-runs model), tile {tile_pc:.2f} pc, r={r:.2f}")
     fig.tight_layout(); fig.savefig(os.path.join(cfg["output_dir"], f"{name}_dust.png"), dpi=130); plt.close(fig)
     return rows, {"region": name, "tile_pc": tile_pc, "r": r, "units": rc["units"]}
 
@@ -272,7 +275,9 @@ def process_matched(name, rc, models):
         out.append({"region": name, "co_cloud": co, "tile_y": y0, "tile_x": x0, "dust_coverage": cov,
                     "beam_arcsec": beam, "r": r,
                     "Ms_CO_tile_spectrum": float(cr["Ms_tile_spectrum"]),
-                    "Ms_CO_projmask_kfold": float(np.exp(np.mean(np.log([float(cr[k]) for k in kf])))) if kf else np.nan})
+                    "Ms_CO_projmask_kfold": float(np.exp(np.mean(np.log([float(cr[k]) for k in kf])))) if kf else np.nan,
+                    "Ms_CO_proj_adopted": float(cr["Ms_foldfull"]) if cr.get("Ms_foldfull") else
+                                          float(np.exp(np.mean(np.log([float(cr[k]) for k in kf])))) if kf else np.nan})
     if not out:
         return []
     predict(models, tiles, r, out)
@@ -280,8 +285,8 @@ def process_matched(name, rc, models):
     print(f"  matched to {co} CO tiles (beam {beam:.1f}\" = {beam / pco:.2f} CO px, r = {r:.2f}):")
     for o in out:
         print(f"    tile ({o['tile_y']:4d},{o['tile_x']:4d})  CO spectrum {o['Ms_CO_tile_spectrum']:5.1f}  "
-              f"CO projmask {o['Ms_CO_projmask_kfold']:5.1f}  dust mom0 {o['Ms_kfold_mean']:5.1f}  "
-              f"bgsub {o['Ms_bgsub_kfold_mean']:5.1f}")
+              f"CO proj {o['Ms_CO_proj_adopted']:5.1f}  dust mom0 {o['Ms_adopted']:5.1f}  "
+              f"bgsub {o['Ms_bgsub_adopted']:5.1f}")
     return out
 
 
@@ -296,9 +301,11 @@ for name, rc in cfg["regions"].items():
     if rows:
         rec = dict(info, n_tiles=len(rows))
         for sfx in ("", "_bgsub"):
-            v = np.array([row[f"Ms{sfx}_{t}"] for row in rows for t in kf])
+            v = np.array([row[f"Ms{sfx}_adopted"] for row in rows])          # adopted model, over tiles
             rec[f"Ms{sfx}_med"], rec[f"Ms{sfx}_p16"], rec[f"Ms{sfx}_p84"] = np.percentile(v, [50, 16, 84])
-        c = np.array([row[f"chi_{t}"] for row in rows for t in kf])
+        fm = [np.median([row[f"Ms_{t}"] for row in rows]) for t in kf]      # per-k-fold-model medians
+        rec["Ms_kf_lo"], rec["Ms_kf_hi"] = min(fm), max(fm)
+        c = np.array([row["chi_adopted"] for row in rows])
         rec["chi_med"], rec["chi_p16"], rec["chi_p84"] = np.percentile(c, [50, 16, 84])
         summary.append(rec)
     matched += process_matched(name, rc, models)
@@ -309,22 +316,24 @@ if matched:
         w = csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(matched)
 
 with open(os.path.join(cfg["output_dir"], "dust_summary.txt"), "w") as fh:
-    hdr = (f"{'region':16s} {'units':7s} {'tile_pc':>7s} {'r':>4s} {'n':>3s}  {'Ms [16-84]':>20s}  "
+    hdr = (f"{'region':16s} {'units':7s} {'tile_pc':>7s} {'r':>4s} {'n':>3s}  {'Ms [16-84]':>20s} {'k-fold':>11s}  "
            f"{'Ms bgsub [16-84]':>20s}  {'chi [16-84]':>18s}  adopted")
-    lines = [f"net9010 mom0 (tag {args.tag}) on Herschel dust maps; every tile x k-fold model ({', '.join(kf)}) pooled",
-             "Adopted value per region: the median on the map as observed. Dust Ms is ~0.3 of the CO tile-spectrum Ms on matched tiles;",
+    head = "foldfull (trained on every run)" if "foldfull" in models else f"k-fold geometric mean ({', '.join(kf)})"
+    lines = [f"net9010 mom0 (tag {args.tag}) on Herschel dust maps; adopted model: {head}. Ms [16-84] over the tiles;",
+             "k-fold: range of the per-region medians of the k-fold models. Adopted value per region: the median on the map",
+             "as observed. Dust Ms is 0.3-0.4 of the CO tile-spectrum Ms on matched tiles;",
              "the cause is not established. The bgsub column is a diagnostic only (its floor manufactures contrast in low-contrast maps).", hdr]
     for s in summary:
         lines.append(f"{s['region']:16s} {s['units']:7s} {s['tile_pc']:7.2f} {s['r']:4.2f} {s['n_tiles']:3d}  "
-                     f"{s['Ms_med']:6.1f} [{s['Ms_p16']:5.1f},{s['Ms_p84']:5.1f}]  "
+                     f"{s['Ms_med']:6.1f} [{s['Ms_p16']:5.1f},{s['Ms_p84']:5.1f}] {s['Ms_kf_lo']:5.1f}-{s['Ms_kf_hi']:<5.1f}  "
                      f"{s['Ms_bgsub_med']:6.1f} [{s['Ms_bgsub_p16']:5.1f},{s['Ms_bgsub_p84']:5.1f}]  "
                      f"{s['chi_med']:6.2f} [{s['chi_p16']:4.2f},{s['chi_p84']:4.2f}]  Ms = {s['Ms_med']:.1f}")
     if matched:
         lines += ["", "CO-matched tiles (same sky area; dust smoothed to the coarser beam on the CO grid)",
-                  f"{'region':16s} {'tile':>11s} {'CO spec':>8s} {'CO proj':>8s} {'dust':>6s} {'dust bg-':>8s}"]
+                  f"{'region':16s} {'tile':>11s} {'CO spec':>8s} {'CO proj':>8s} {'dust':>6s} {'dust kf':>7s} {'dust bg-':>8s}"]
         for m in matched:
             lines.append(f"{m['region']:16s} ({m['tile_y']:4d},{m['tile_x']:4d}) {m['Ms_CO_tile_spectrum']:8.1f} "
-                         f"{m['Ms_CO_projmask_kfold']:8.1f} {m['Ms_kfold_mean']:6.1f} {m['Ms_bgsub_kfold_mean']:8.1f}")
+                         f"{m['Ms_CO_proj_adopted']:8.1f} {m['Ms_adopted']:6.1f} {m['Ms_kfold_mean']:7.1f} {m['Ms_bgsub_adopted']:8.1f}")
     fh.write("\n".join(lines) + "\n")
 print("\n" + open(os.path.join(cfg["output_dir"], "dust_summary.txt")).read())
 print(f"Wrote {cfg['output_dir']}")

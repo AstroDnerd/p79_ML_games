@@ -237,13 +237,6 @@ def fig_chi_scatter():
     save(fig, "chi_scatter")
 
 
-# ─── 6. xi confusion matrices (first net9010, random split) ──────────────────
-
-def fig_xi_confusion():
-    src = "/home/x-nbisht1/thesis/6669b1f35be7cdc2643f33d9/Figures/chapter3/xi_confusion_net9010_allmom_randomsplit.png"
-    os.makedirs(OUT, exist_ok=True); shutil.copy(src, f"{OUT}/fig_xi_confusion.png"); print("copied", src)
-
-
 # ─── 7. b Ms degeneracy: residual correlation by Ms bin ──────────────────────
 
 def fig_degeneracy():
@@ -323,69 +316,118 @@ def fig_radmc_maps():
     save(fig, "radmc_maps", png=True)
 
 
-# ─── 10. Model comparison by Ms bin ──────────────────────────────────────────
+# ─── 10. Ms accuracy by Mach number for every training set, and vs extinction for run 2 ───
+
+MODEL_STYLE = {"final_proj": ("#2a78d6", "o"), "final_13co": ("#eb6834", "s"), "final_co13": ("#1baf7a", "D"),
+               "final_co12": ("#eda100", "^"), "final_coboth": ("#e87ba4", "v")}
+
 
 def fig_model_comparison():
-    fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.5), gridspec_kw={"wspace": 0.25})
-    centers = np.arange(len(MS_BINS))
-    colors = plt.cm.tab10(np.arange(len(MODELS_ORDER)))
-    width = 0.8 / len(MODELS_ORDER)
-    for j, (tag, label) in enumerate(MODELS_ORDER):
+    """(a) median fractional Ms error by Ms bin, every training set; (b) the same for run 2 against
+    the median A_V of the image (Ms >= 1). chi_v per bin is in Table 2."""
+    fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.5), gridspec_kw={"wspace": 0.25, "width_ratios": [1.15, 1]})
+    edges = np.array([0.8, 1.5, 2.5, 4, 6, 10, 16, 30])
+    x = np.arange(len(MS_BINS))
+    for tag, label in MODELS_ORDER:
         d = pooled(tag)
         if d is None:
             continue
-        err, r2c = [], []
-        for lo, hi in MS_BINS:
-            m = (d["ms_true"] >= lo) & (d["ms_true"] < hi)
-            err.append(np.median(np.abs(d["ms_mean"][m] - d["ms_true"][m]) / d["ms_true"][m]))
-            r2c.append(r2(d["chi_true"][m], d["chi_mean"][m]))
-        x = centers - 0.4 + width * (j + 0.5)
+        c, mk = MODEL_STYLE[tag]
+        frac = np.abs(d["ms_mean"] - d["ms_true"]) / d["ms_true"]
+        err = [np.median(frac[(d["ms_true"] >= lo) & (d["ms_true"] < hi)]) for lo, hi in MS_BINS]
         lab = label + (f" ({d['n_folds']} folds)" if d["n_folds"] < 5 else "")
-        axes[0].bar(x, 100 * np.array(err), width, color=colors[j], label=lab)
-        axes[1].bar(x, np.clip(r2c, -1, 1), width, color=colors[j])
-    ticks = [fr"{lo:g}–{min(hi, 20):g}" for lo, hi in MS_BINS]
-    for ax in axes:
-        ax.set_xticks(centers); ax.set_xticklabels(ticks); ax.set_xlabel(r"$\mathcal{M}_s$ bin")
-    axes[0].set_ylabel(r"median $|\Delta\mathcal{M}_s|/\mathcal{M}_s$ [%]"); axes[0].set_yscale("log")
-    axes[1].set_ylabel(r"$R^2(\chi_v)$ (clipped at $-1$)"); axes[1].axhline(0, color="k", lw=0.5); axes[1].set_ylim(-1, 1)
-    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center", bbox_to_anchor=(0.5, 0.97), ncol=3,
-               frameon=False, fontsize=6)
+        axes[0].plot(x, 100 * np.array(err), "-", marker=mk, color=c, ms=4.5, lw=1.0, mec="white", mew=0.5,
+                     label=lab, zorder=3)
+        if tag in RUN2 and "AV_median" in d:
+            ok = d["ms_true"] >= 1
+            cx, med = binned(d["AV_median"][ok], frac[ok], edges)
+            axes[1].plot(cx, 100 * med, "-", marker=mk, color=c, ms=4.5, lw=1.0, mec="white", mew=0.5, zorder=3)
+    axes[0].set_xticks(x); axes[0].set_xticklabels([fr"{lo:g}–{min(hi, 20):g}" for lo, hi in MS_BINS])
+    axes[0].set_xlabel(r"true $\mathcal{M}_s$"); axes[0].set_yscale("log")
+    axes[0].set_ylabel(r"median $|\Delta\mathcal{M}_s|/\mathcal{M}_s$ [%]")
+    from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
+    axes[0].yaxis.set_major_locator(FixedLocator([5, 10, 20, 50, 100, 200])); axes[0].yaxis.set_minor_locator(NullLocator())
+    axes[0].yaxis.set_major_formatter(ScalarFormatter())
+    ax = axes[1]
+    ax.set_xscale("log"); ax.set_xlabel(r"median $A_V$ of the image [mag]"); ax.set_ylim(0, 12)
+    ax.xaxis.set_major_locator(FixedLocator([1, 2, 5, 10, 20])); ax.xaxis.set_minor_locator(NullLocator())
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    ax.set_ylabel(r"median $|\Delta\mathcal{M}_s|/\mathcal{M}_s$ [%], $\mathcal{M}_s\geq1$")
+    ax.axvline(5, color="0.5", ls=":", lw=0.7)
+    ax.text(5.4, 0.05, r"$^{13}$CO saturates $\rightarrow$", transform=ax.get_xaxis_transform(), fontsize=6, color="0.35")
+    ax.text(0.03, 0.05, r"run 2 only", transform=ax.transAxes, fontsize=6, color="0.35")
+    for a, lab in zip(axes, "ab"):
+        a.grid(axis="y", color="0.9", lw=0.5, zorder=0)
+        a.text(0.97, 0.95, f"({lab})", transform=a.transAxes, ha="right", va="top", fontsize=8)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center", bbox_to_anchor=(0.5, 0.96), ncol=5,
+               frameon=False, fontsize=6, handlelength=2.2, columnspacing=1.2)
     save(fig, "model_comparison")
 
 
-# ─── 11. Run 2: accuracy vs extinction ───────────────────────────────────────
+# ─── 12. Observed clouds: tile maps ──────────────────────────────────────────
 
-def fig_av():
-    fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.3), gridspec_kw={"wspace": 0.25})
-    edges = np.array([0.8, 1.5, 2.5, 4, 6, 10, 16, 30])
-    cols = {"final_co13": "#1b9e77", "final_co12": "#d95f02", "final_coboth": "#7570b3"}
-    for tag, label in [m for m in MODELS_ORDER if m[0] in RUN2]:
-        d = pooled(tag)
-        if d is None:
-            continue
-        ok = d["ms_true"] >= 1
-        av, e = d["AV_median"][ok], np.abs(d["ms_mean"][ok] - d["ms_true"][ok]) / d["ms_true"][ok]
-        cx, med = binned(av, e, edges)
-        axes[0].plot(cx, 100 * med, "o-", color=cols[tag], ms=3, lw=0.9, label=label)
-        cx, mae = binned(av, np.abs(d["chi_mean"][ok] - d["chi_true"][ok]), edges, np.mean)
-        axes[1].plot(cx, mae, "o-", color=cols[tag], ms=3, lw=0.9)
-    for ax in axes:
-        ax.set_xscale("log"); ax.set_xlabel(r"median $A_V$ of the image"); ax.axvline(5, color="0.5", ls=":", lw=0.7)
-    for ax in axes:
-        ax.text(5.4, 0.92, r"$^{13}$CO saturates $\rightarrow$", transform=ax.get_xaxis_transform(), fontsize=6, color="0.4")
-    axes[0].set_ylabel(r"median $|\Delta\mathcal{M}_s|/\mathcal{M}_s$ [%] ($\mathcal{M}_s\geq1$)")
-    axes[1].set_ylabel(r"MAE($\chi_v$) ($\mathcal{M}_s\geq1$)")
-    axes[0].legend(frameon=False, fontsize=6)
-    save(fig, "av")
+def _obs_m0(cloud, cfg_path="obs_clouds.json"):
+    """Integrated-intensity map of one observed cloud with the observation pipeline of
+    predict_observations_net9010.py (same mask), on the grid the tiles were placed on."""
+    import contextlib, io, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import get_Observation_Data as G
+    from scipy.ndimage import zoom
+    cfg = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), cfg_path)))
+    cc = cfg["clouds"][cloud]
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        data, hdr, wcs, vax = G.load_ppv_cube(os.path.join(cfg["obs_dir"], cc["fits"]))
+        n_run = G.min_channels_for(cc.get("min_channels", cfg.get("min_channels", 3)), np.median(np.abs(np.diff(vax))))
+        m0, m1, m2, mask = G.compute_moment_maps(data, vax, noise_threshold=cfg["mask_sigma"], min_channels=n_run,
+                                                 noise=cc.get("noise_rms_K"))
+    pix = next(abs(float(hdr[f"CDELT{i}"])) * 3600.0 for i in (1, 2, 3)
+               if not str(hdr.get(f"CTYPE{i}", "VELO")).upper().startswith(("VELO", "VRAD", "FREQ", "VOPT")))
+    native = json.load(open(f"{MODELS}/conformal_quantiles_9010_final_proj_allmom_foldfull.json")).get("native_beam_pix", 1.0)
+    T = cfg["tile_size"]
+    up = max(1.0, T / min(m0.shape), native / (cc["beam_arcsec"] / pix))          # as in predict_observations
+    if up < 1.02 and min(m0.shape) >= T:
+        up = 1.0
+    elif min(m0.shape) * up < T:
+        up = (T + 0.5) / min(m0.shape)
+    if up != 1.0:
+        m0, mask = zoom(m0, up, order=1), zoom(mask.astype(np.uint8), up, order=0).astype(bool)
+    pc_per_pix = pix / up / 206265.0 * cc["distance_pc"]
+    return np.where(mask, m0, np.nan), pc_per_pix, T
 
-
-# ─── 12. Observed clouds: tile maps (from predict_observations_net9010.py) ───
 
 def fig_obs_maps():
-    os.makedirs(OUT, exist_ok=True)
-    for cloud in ("perseus", "orion"):
-        src = f"{PLOTS}/observations_net9010_final_proj/{cloud}_net9010.png"
-        shutil.copy(src, f"{OUT}/fig_obs_{cloud}.png"); print("copied", src)
+    """Projected-map model (all-runs model) on the 13CO maps of Perseus and Orion A: integrated intensity,
+    the 128-pixel tiles, and per tile the predicted Ms over the Ms of the tile spectrum."""
+    import pandas as pd
+    from matplotlib.patches import Rectangle
+    clouds = [("perseus", "Perseus (FCRAO)"), ("orion", "Orion A (NRO 45 m)")]
+    fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.9), gridspec_kw={"wspace": 0.22, "width_ratios": [1.6, 1]})
+    for ax, (cloud, name) in zip(axes, clouds):
+        m0, s, T = _obs_m0(cloud)
+        t = pd.read_csv(f"{PLOTS}/observations_net9010_final_proj/{cloud}_net9010_tiles.csv")
+        ny, nx = m0.shape
+        ext = [-nx / 2 * s, nx / 2 * s, -ny / 2 * s, ny / 2 * s]
+        v = m0[np.isfinite(m0)]
+        im = ax.imshow(m0, origin="lower", extent=ext, cmap="Greys",
+                       norm=LogNorm(np.percentile(v, 5), np.percentile(v, 99.7)), interpolation="nearest")
+        im.set_alpha(0.75)
+        head = _head(t)
+        for _, r in t.iterrows():
+            x0, y0 = (r.tile_x - nx / 2) * s, (r.tile_y - ny / 2) * s
+            ax.add_patch(Rectangle((x0, y0), T * s, T * s, fill=False, ec="#c0392b", lw=0.9, zorder=3))
+            ax.text(x0 + 0.04 * T * s, y0 + 0.96 * T * s, f"{r[head]:.1f}\n({r.Ms_tile_spectrum:.1f})",
+                    ha="left", va="top", fontsize=5.5, color="k", zorder=4, linespacing=1.0,
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="#c0392b", lw=0.5, alpha=0.9))
+        ax.set_xlim(ext[0], ext[1]); ax.set_ylim(ext[2], ext[3])
+        ax.set_xlabel("offset [pc]"); ax.set_ylabel("offset [pc]")
+        ax.text(0.02, 0.97, name, transform=ax.transAxes, ha="left", va="top", fontsize=7,
+                bbox=dict(boxstyle="square,pad=0.2", fc="white", ec="none", alpha=0.8))
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        cax = make_axes_locatable(ax).append_axes("top", size="4%", pad=0.04)
+        cb = fig.colorbar(im, cax=cax, orientation="horizontal"); cb.solids.set_alpha(1)
+        cax.xaxis.set_ticks_position("top"); cax.xaxis.set_label_position("top")
+        cb.set_label(r"$W(^{13}{\rm CO})$ [K km s$^{-1}$]", fontsize=6.5); cax.tick_params(labelsize=6)
+    save(fig, "obs_maps")
 
 
 # ─── 13. Observed clouds: predictions vs matched-scale Ms ────────────────────
@@ -423,8 +465,7 @@ def fig_obs_compare():
 
 # ─── 14. Perseus: observed Mach number depends on scale ──────────────────────
 
-def fig_linewidth_scale():
-    fig, ax = plt.subplots(figsize=(COL1, 2.4))
+def _linewidth_scale_panel(ax):
     L = np.logspace(-1.5, 1.7, 50)
     ax.plot(L, np.sqrt(3) * 0.7 * L ** 0.5 / 0.188, "k:", lw=0.8, label=r"Larson: $\sigma_{1D}=0.7\,L^{1/2}$ km s$^{-1}$")
     ax.plot(0.067, 4.8, "o", color="#1b9e77", ms=4, label="single beams (median)")
@@ -436,7 +477,6 @@ def fig_linewidth_scale():
     ax.plot(30, 14, "^", color="#e7298a", ms=4.5, label="complex (Padoan+2003)")
     ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlabel("scale $L$ [pc]"); ax.set_ylabel(r"$\mathcal{M}_s$ from linewidth")
     ax.legend(frameon=False, fontsize=5.5, loc="upper left")
-    save(fig, "linewidth_scale")
 
 
 # ─── 15. MWISP: network vs tile-spectrum Ms, by tile size ────────────────────
@@ -481,29 +521,52 @@ def fig_mwisp():
 
 # ─── 16. Herschel dust: column-density model on the CO tiles ─────────────────
 
-def fig_dust():
+def _dust_panel(ax):
+    """Herschel dust (column-density model) and 13CO (projected-map model) on the same tiles; both the
+    models trained on every run, with the range of the five fold models as a vertical bar."""
     import pandas as pd
     t = pd.read_csv(f"{PLOTS}/observations_net9010_dust_final/dust_matched_tiles.csv")
+    kf = [f"Ms_fold{i}" for i in range(5)]
+    co = []
+    for cloud, s in t.groupby("co_cloud", sort=False):
+        c = pd.read_csv(f"{PLOTS}/observations_net9010_final_proj/{cloud}_net9010_tiles.csv")
+        co.append(s[["co_cloud", "tile_y", "tile_x"]].merge(c[["tile_y", "tile_x", "Ms_foldfull"] + kf],
+                                                            on=["tile_y", "tile_x"], how="left", suffixes=("", "")))
+    co = pd.concat(co).rename(columns=lambda k: "co_" + k if k.startswith("Ms_") else k)
+    t = t.merge(co, on=["co_cloud", "tile_y", "tile_x"])
     marks = {"perseus": ("o", "Perseus"), "ophiuchus": ("s", "Ophiuchus"), "orion": ("D", "Orion A")}
-    fig, ax = plt.subplots(figsize=(COL1, 2.6))
     for cloud, (mk, name) in marks.items():
         s = t[t["co_cloud"] == cloud]
         if s.empty:
             continue
-        ax.scatter(s["Ms_CO_tile_spectrum"], s["Ms_kfold_mean"], marker=mk, s=18, color="#d95f02", edgecolor="k", lw=0.3,
+        x = s["Ms_CO_tile_spectrum"]
+        ax.vlines(x, s[kf].min(axis=1), s[kf].max(axis=1), color="#d95f02", lw=0.6, alpha=0.6, zorder=2)
+        ax.vlines(x, s[["co_" + k for k in kf]].min(axis=1), s[["co_" + k for k in kf]].max(axis=1),
+                  color="#1b9e77", lw=0.6, alpha=0.6, zorder=2)
+        ax.scatter(x, s["Ms_foldfull"], marker=mk, s=18, color="#d95f02", edgecolor="k", lw=0.3,
                    label=f"{name}, dust", zorder=3)
-        ax.scatter(s["Ms_CO_tile_spectrum"], s["Ms_CO_projmask_kfold"], marker=mk, s=18, facecolor="none",
-                   edgecolor="#1b9e77", lw=0.7, label=f"{name}, $^{{13}}$CO", zorder=3)
-        ax.plot(np.c_[s["Ms_CO_tile_spectrum"], s["Ms_CO_tile_spectrum"]].T,
-                np.c_[s["Ms_kfold_mean"], s["Ms_CO_projmask_kfold"]].T, color="0.7", lw=0.5, zorder=1)
+        ax.scatter(x, s["co_Ms_foldfull"], marker=mk, s=18, facecolor="white",
+                   edgecolor="#1b9e77", lw=0.8, label=f"{name}, $^{{13}}$CO", zorder=3)
     x = np.array([1, 40])
-    ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 0.3 * x, "k:", lw=0.6)
-    ax.text(18, 4.6, r"$\times0.3$", fontsize=6)
-    ax.set_xlim(4, 22); ax.set_ylim(1.2, 22)
+    ax.plot(x, x, "k-", lw=0.6); ax.plot(x, 0.4 * x, "k:", lw=0.6)
+    ax.text(17, 5.4, r"$\times0.4$", fontsize=6)
+    ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlim(5, 21); ax.set_ylim(1.3, 45)
+    from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
+    for axis, tk in ((ax.xaxis, [5, 10, 20]), (ax.yaxis, [2, 5, 10, 20, 40])):
+        axis.set_major_locator(FixedLocator(tk)); axis.set_minor_locator(NullLocator())
+        axis.set_major_formatter(ScalarFormatter())
     ax.set_xlabel(r"$\mathcal{M}_s^{\rm obs}$ from the $^{13}$CO tile spectrum")
-    ax.set_ylabel(r"predicted $\mathcal{M}_s$ (5-fold mean)")
+    ax.set_ylabel(r"predicted $\mathcal{M}_s$")
     ax.legend(frameon=False, fontsize=5, loc="upper left", ncol=2)
-    save(fig, "dust")
+
+
+def fig_dust_scale():
+    """(a) Herschel dust vs 13CO on matched tiles; (b) Perseus Mach number from linewidths on different scales."""
+    fig, axes = plt.subplots(1, 2, figsize=(COL2, 2.6), gridspec_kw={"wspace": 0.28})
+    _dust_panel(axes[0]); _linewidth_scale_panel(axes[1])
+    for ax, lab in zip(axes, "ab"):
+        ax.text(0.97, 0.04, f"({lab})", transform=ax.transAxes, ha="right", va="bottom", fontsize=8)
+    save(fig, "dust_scale")
 
 
 FIGS = {k[4:]: v for k, v in globals().items() if k.startswith("fig_") and callable(v)}

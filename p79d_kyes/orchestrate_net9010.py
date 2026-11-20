@@ -217,8 +217,50 @@ def plan_full():
             "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
 
 
+def plan_nomask():
+    """Five-fold run of the projected full-moment model WITHOUT mask augmentation, same seed and folds as final_proj,
+    for the with/without comparison on the final 42-run suite."""
+    proj = f"{DATA}/p79d_mach_grid_256_v1.h5"
+    jobs = [{"name": f"final_proj_nomask_f{fold}", "group": "final_proj_nomask", "fold": fold, "mode": "allmom",
+             "args": f"--mode allmom --fold {fold} --data_file {proj} --image_key images "
+                     f"--dens_head --no_plots --tag final_proj_nomask",
+             "outputs": [f"{MODEL_DIR}/net9010_final_proj_nomask_allmom_fold{fold}_test.json"],
+             "mem_gb": 56, "time_h": 12.0, "time_h0": 12.0, "state": "queued", "attempts": []} for fold in "01234"]
+    return {"name": "nomask", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
+def plan_audit():
+    """Audit follow-ups on the run-2 CO models (Nov 2026): (1) mask augmentation for the 13CO and two-line models,
+    five folds plus the all-runs model each (tags final_co13_mask, final_coboth_mask), to test whether it changes
+    the offset on real, partly detected tiles; (5) a second seed for the 13CO model on the same folds (final_co13_s2).
+    The all-runs models need their group's five fold files, so they carry "after" and wait for them."""
+    r2 = f"{DATA}/p79d_mach_grid_256_co_v2_fcrao500.h5"
+    variants = [  # (tag, image_key, extra, memory GB)
+        ("final_co13_mask",   "images_obs_13co", "--mask_aug_prob 0.5", 56),
+        ("final_coboth_mask", "images_obs_13co+images_obs_12co", "--mask_aug_prob 0.5", 64),
+        ("final_co13_s2",     "images_obs_13co", "--seed 2", 56),
+    ]
+    jobs = []
+    for fold in "01234":
+        for tag, key, extra, mem in variants:
+            jobs.append({"name": f"{tag}_f{fold}", "group": tag, "fold": fold, "mode": "allmom",
+                         "args": f"--mode allmom --fold {fold} --data_file {r2} --image_key {key} {extra} "
+                                 f"--dens_head --no_plots --tag {tag}",
+                         "outputs": [f"{MODEL_DIR}/net9010_{tag}_allmom_fold{fold}_test.json"],
+                         "mem_gb": mem, "time_h": 12.0, "time_h0": 12.0, "state": "queued", "attempts": []})
+    for tag, key, extra, mem in variants[:2]:
+        jobs.append({"name": f"{tag}_ffull", "group": tag, "fold": "full", "mode": "allmom", "after": tag,
+                     "args": f"--mode allmom --fold full --data_file {r2} --image_key {key} {extra} "
+                             f"--dens_head --no_plots --tag {tag}",
+                     "outputs": [f"{MODEL_DIR}/conformal_quantiles_9010_{tag}_allmom_foldfull.json"],
+                     "mem_gb": mem + 8, "time_h": 14.0, "time_h0": 14.0, "state": "queued", "attempts": []})
+    return {"name": "audit", "max_submitted": 4, "max_running": 2, "max_retries": 2,
+            "poll_s": 600, "cores": 128, "groups_pooled": [], "jobs": jobs}
+
+
 PLANS = {"run2": plan_run2, "tests1": plan_tests1, "tests2": plan_tests2, "smooth": plan_smooth, "final": plan_final,
-         "full": plan_full}
+         "full": plan_full, "nomask": plan_nomask, "audit": plan_audit}
 
 
 # ─── STATE ───────────────────────────────────────────────────────────────────
@@ -230,9 +272,12 @@ def load(path):
 
 def save(state, path):
     tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(state, fh, indent=1)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=1)
+        os.replace(tmp, path)
+    except OSError as e:          # e.g. a transient "No space left on device": keep the loop alive, retry next cycle
+        log(f"could not save state ({e}); keeping it in memory and retrying next cycle")
 
 
 def highmem_jobs():
@@ -362,6 +407,9 @@ def cycle(state):
     for job in state["jobs"]:
         if job["state"] != "queued":
             continue
+        if job.get("after") and not all(j["state"] == "done" for j in state["jobs"]
+                                        if j["group"] == job["after"] and j["fold"] not in ("all", "full")):
+            continue                                 # an all-runs model waits for its group's k-fold files
         if total >= state["max_submitted"]:
             break
         # queued jobs only start when a running slot frees, so pending ones beyond
